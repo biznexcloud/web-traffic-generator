@@ -10,7 +10,7 @@ services:
       - ./SEO_BOOSTER_2025:/app/SEO_BOOSTER_2025
     restart: unless-stopped
     env_file:
-      - .env.example
+      - .env
 
     # Fixed ulimits for Coolify (soft == hard to avoid permission error)
     # ulimits:
