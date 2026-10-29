@@ -1,10 +1,14 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv(Path(__file__).resolve().parent.parent / '.env')
 
 # ==================== CONFIG ====================
 
 # Target Website
-TARGET_URL = "https://restromandu.com"
+TARGET_URL = os.getenv("TARGET_URL", "https://restromandu.com")
 
 # Proxy Settings
 # Support for authenticated proxies: "http://user:pass@host:port" or "socks5://user:pass@host:port"
@@ -627,20 +631,25 @@ KEYWORDS = [
   "restaurant management system Nagarkot"
 ]
 
+# ponytail: basic casts only; add schema validator if complex types needed
+_env_keywords = os.getenv("KEYWORDS")
+if _env_keywords and _env_keywords.strip():
+    KEYWORDS = [k.strip() for k in _env_keywords.split(",") if k.strip()]
+
 # Threading & Performance
-THREADS = 5
-PROXY_ROTATE_INTERVAL = 600  # 10 minutes
-PORT = 5000
+THREADS = int(os.getenv("THREADS", 5))
+PROXY_ROTATE_INTERVAL = int(os.getenv("PROXY_ROTATE_INTERVAL", 600))  # seconds
+PORT = int(os.getenv("PORT", 5000))
 
 # Behavior Timing (seconds)
-DWELL_MIN = 60
-DWELL_MAX = 180
-GOOGLE_WAIT_MIN = 10
-GOOGLE_WAIT_MAX = 30
+DWELL_MIN = int(os.getenv("DWELL_MIN", 60))
+DWELL_MAX = int(os.getenv("DWELL_MAX", 180))
+GOOGLE_WAIT_MIN = int(os.getenv("GOOGLE_WAIT_MIN", 10))
+GOOGLE_WAIT_MAX = int(os.getenv("GOOGLE_WAIT_MAX", 30))
 
-OUTPUT_FOLDER = "SEO_BOOSTER_2025"
+OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "SEO_BOOSTER_2025")
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # Admin Credentials
-ADMIN_USER = "admin"
-ADMIN_PASS = "Ramesh@5611"
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "Ramesh@5611")

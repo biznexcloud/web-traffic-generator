@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Environment files
+.env
+!.env.example
+
+# Runtime logs & output folder
+*.log
+SEO_BOOSTER_2025/
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/

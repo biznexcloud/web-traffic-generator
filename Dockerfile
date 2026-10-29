@@ -17,8 +17,8 @@ COPY . .
 RUN mkdir -p /app/SEO_BOOSTER_2025 && chmod 777 /app/SEO_BOOSTER_2025
 
 # Optional: extra safety for file limits
-RUN echo "* soft nofile 65535" >> /etc/security/limits.conf && \
-    echo "* hard nofile 65535" >> /etc/security/limits.conf
+# RUN echo "* soft nofile 65535" >> /etc/security/limits.conf && \
+#     echo "* hard nofile 65535" >> /etc/security/limits.conf
 
 EXPOSE 5000
 
