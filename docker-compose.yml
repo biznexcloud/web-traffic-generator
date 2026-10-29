@@ -13,9 +13,9 @@ services:
       - .env.example
 
     # Fixed ulimits for Coolify (soft == hard to avoid permission error)
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
+    # ulimits:
+    #   nofile:
+    #     soft: 65535
+    #     hard: 65535
 
  
