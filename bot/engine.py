@@ -14,9 +14,12 @@ from curl_cffi import requests
 from curl_cffi.requests import BrowserType
 
 from bot.config import (
-    TARGET_URL, KEYWORDS, THREADS, OUTPUT_FOLDER, 
+    TARGET_URL, KEYWORDS, THREADS, OUTPUT_FOLDER,
     PROXY_ROTATE_INTERVAL, PREMIUM_PROXIES,
-    DWELL_MIN, DWELL_MAX, GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX
+    DWELL_MIN, DWELL_MAX, GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX,
+    TRAFFIC_SOURCES, SOCIAL_REFERRERS, AI_REFERRERS,
+    OTHER_SEARCH_ENGINES, INTERNAL_PATHS,
+    PAGES_PER_SESSION_MIN, PAGES_PER_SESSION_MAX, DEVICE_PROFILES,
 )
 from bot.logger import logger
 
@@ -31,14 +34,18 @@ class SEOBoosterBot:
         self.unique_pages: set = set()
         self.start_time: Optional[datetime] = None
         self.stats_lock = threading.Lock()
-        
+
         self.working_proxies = []
         self.proxy_lock = threading.Lock()
-        
+
         self.is_running = False
         self.stop_event = threading.Event()
         self.threads = []
-        
+
+        # Cached GA4 measurement ID
+        self._ga4_tid: Optional[str] = None
+        self._ga4_tid_lock = threading.Lock()
+
         # Init CSV LOG
         self.log_path = os.path.join(OUTPUT_FOLDER, "traffic_log.csv")
         if not os.path.exists(self.log_path):
@@ -47,6 +54,8 @@ class SEOBoosterBot:
                     csv.writer(f).writerow(["Time", "Type", "Page", "IP", "Country", "Dwell", "Analytics Fired"])
             except Exception as e:
                 logger.error(f"Failed to initialize log file: {e}")
+
+    # ==================== PROXY POOL (UNTOUCHED) ====================
 
     def get_proxies(self):
         """Scrape free proxies from various sources."""
@@ -106,24 +115,24 @@ class SEOBoosterBot:
     def build_proxy_pool(self):
         """Refresh the proxy pool with both premium and tested free proxies."""
         logger.info("Initializing Proxy Pool...")
-        
+
         pool = []
         for p in PREMIUM_PROXIES:
             pool.append({"proxy": p, "ip": "PREMIUM", "country": "US", "score": 100})
-            
+
         raw_list = self.get_proxies()
         if raw_list:
             logger.info(f"Scraped {len(raw_list)} raw proxies. Testing...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(raw_list) + 1, 100)) as ex:
                 results = list(ex.map(self.test_proxy, raw_list))
-            
+
             good_free = [p for p in results if p and p.get("score", 0) >= 70]
             good_free.sort(key=lambda x: x.get("score", 0), reverse=True)
             pool.extend(good_free[:500])
-        
+
         with self.proxy_lock:
             self.working_proxies = pool
-            
+
         logger.info(f"[PROXY] Pool refreshed. Total: {len(self.working_proxies)} (Premium: {len(PREMIUM_PROXIES)})")
 
     def proxy_refresher(self):
@@ -132,55 +141,126 @@ class SEOBoosterBot:
                 break
             self.build_proxy_pool()
 
-    def fire_analytics(self, sess, url, client_id):
-        """Simulate ultra-realistic GA4 collection requests."""
-        count = 0
+    # ==================== GA4 ANALYTICS ====================
+
+    def _resolve_ga4_tid(self, sess):
+        """Fetch and cache GA4 measurement ID from target site."""
+        with self._ga4_tid_lock:
+            if self._ga4_tid:
+                return self._ga4_tid
         try:
-            # 1. Get the page content
-            r = sess.get(url, timeout=30)
-            if r.status_code != 200: return 0
-            
-            # Extract tracking ID
-            tid_match = re.search(r'G-([A-Z0-9]{10})', r.text)
-            tid = tid_match.group(0) if tid_match else "G-DUMMY12345"
-            
-            # Extract title dynamically
-            soup = BeautifulSoup(r.text, 'html.parser')
-            title = soup.title.string if soup.title else "Biznex Cloud"
-            
-            # 2. Authentic GA4 Parameters
-            sid = str(random.randint(1000000000, 9999999999))
-            res = random.choice(["1920x1080", "1440x900", "1366x768", "1536x864", "1280x720"])
-            
-            collect_base = "https://www.google-analytics.com/g/collect"
-            params = (f"?v=2&tid={tid}&cid={client_id}&_sid={sid}&_sct=1&_seg=1"
-                      f"&dl={quote(url)}&dt={quote(title)}&sr={res}&ul=en-us")
-            
-            # Fire page_view
-            sess.get(collect_base + params + "&en=page_view", timeout=10)
-            count += 1
-            
-            # 3. Engagement signal (Crucial for SEO metrics)
-            if random.random() < 0.8:
-                time.sleep(random.uniform(10, 20))
-                engagement_time = random.randint(15000, 45000) # 15-45s of active engagement
-                sess.get(collect_base + params + f"&en=user_engagement&_et={engagement_time}", timeout=10)
-                count += 1
+            r = sess.get(TARGET_URL, timeout=30)
+            if r.status_code == 200:
+                m = re.search(r'G-([A-Z0-9]{10})', r.text)
+                if m:
+                    tid = m.group(0)
+                    with self._ga4_tid_lock:
+                        self._ga4_tid = tid
+                    return tid
+        except Exception:
+            pass
+        return None
+
+    def fire_ga4_event(self, sess, url, title, client_id, session_id, event_name,
+                       engagement_time=None, is_first_visit=False, is_session_start=False,
+                       referrer=None, screen_res="1920x1080"):
+        """Fire a single GA4 collect event. Returns True on success."""
+        try:
+            tid = self._resolve_ga4_tid(sess)
+            if not tid:
+                return False
+
+            page_id = str(random.randint(100000000, 9999999999))
+            params = {
+                "v": "2",
+                "tid": tid,
+                "cid": client_id,
+                "_p": page_id,
+                "dl": url,
+                "dt": title,
+                "sr": screen_res,
+                "ul": "en-us",
+                "en": event_name,
+                "sid": session_id,
+                "_s": "1",
+            }
+
+            if referrer:
+                params["dr"] = referrer
+            if is_session_start:
+                params["_ss"] = "1"
+                params["seg"] = "1"
+            if is_first_visit:
+                params["_fv"] = "1"
+            if engagement_time:
+                params["_et"] = str(engagement_time)
+
+            query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
+            sess.get(f"https://www.google-analytics.com/g/collect?{query}", timeout=10)
+            return True
         except Exception as e:
-            logger.debug(f"GA4 signal failed: {e}")
-        return count
+            logger.debug(f"GA4 event '{event_name}' failed: {e}")
+            return False
+
+    # ==================== PAGE HELPERS ====================
+
+    def get_page_title(self, sess, url):
+        """Fetch page, return (title, status_code). Returns (None, code) on error."""
+        try:
+            r = sess.get(url, timeout=30)
+            if r.status_code != 200:
+                return None, r.status_code
+            soup = BeautifulSoup(r.text, 'html.parser')
+            title = soup.title.string.strip() if soup.title and soup.title.string else "RestroMandu"
+            return title, 200
+        except Exception:
+            return None, 0
+
+    def discover_internal_links(self, sess, page_url):
+        """Parse page HTML, return list of same-domain internal links."""
+        try:
+            r = sess.get(page_url, timeout=30)
+            if r.status_code != 200:
+                return []
+            soup = BeautifulSoup(r.text, 'html.parser')
+            base = urlparse(page_url)
+            links = set()
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                full = urljoin(page_url, href)
+                parsed = urlparse(full)
+                if (parsed.netloc == base.netloc and
+                    parsed.scheme in ('http', 'https') and
+                    not parsed.path.endswith(('.pdf', '.jpg', '.png', '.css', '.js', '.xml', '.gz')) and
+                    parsed.path != urlparse(page_url).path and
+                    '#' not in href):
+                    clean = parsed.scheme + "://" + parsed.netloc + parsed.path
+                    links.add(clean)
+            return list(links)
+        except Exception:
+            return []
+
+    # ==================== SESSION / DEVICE ====================
+
+    def _pick_device_profile(self):
+        """Weighted random device profile selection."""
+        weights = [p["weight"] for p in DEVICE_PROFILES]
+        return random.choices(DEVICE_PROFILES, weights=weights, k=1)[0]
 
     def get_session(self, proxy_data):
-        """Create a session with realistic browser headers."""
-        # impersonate chrome120 handles most fingerprint headers automatically
+        """Create session with diverse browser fingerprint. Returns (session, profile)."""
+        profile = self._pick_device_profile()
         s = requests.Session(impersonate=BrowserType.chrome120, timeout=60)
-        
-        # Professional User-Agent rotation
+
         chrome_ver = random.randint(120, 131)
         version = f"{chrome_ver}.0.{random.randint(6000, 7000)}.{random.randint(10, 200)}"
-        ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
-        
-        s.headers.update({
+        minor = random.randint(1, 6)
+
+        ua = profile["ua_tpl"].format(ver=version, minor=minor)
+        res = random.choice(profile["resolutions"])
+        is_mobile = profile["platform"] == "mobile"
+
+        headers = {
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
@@ -188,77 +268,231 @@ class SEOBoosterBot:
             "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Ch-Ua": f'"Not_A Brand";v="8", "Chromium";v="{chrome_ver}", "Google Chrome";v="{chrome_ver}"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
-        })
-        
+        }
+
+        # Only Chrome sends Sec-Ch-Ua headers
+        if profile["browser"] == "Chrome":
+            headers["Sec-Ch-Ua"] = f'"Not_A Brand";v="8", "Chromium";v="{chrome_ver}", "Google Chrome";v="{chrome_ver}"'
+            headers["Sec-Ch-Ua-Mobile"] = "?1" if is_mobile else "?0"
+            headers["Sec-Ch-Ua-Platform"] = f'"{profile["os"]}"'
+
+        s.headers.update(headers)
+
         if proxy_data and proxy_data.get("proxy"):
             p = proxy_data["proxy"]
             s.proxies = {"http": p, "https": p}
-        return s
+
+        # Attach resolution to profile for GA4 use
+        profile["_res"] = res
+        return s, profile
+
+    # ==================== TRAFFIC SOURCE SELECTION ====================
+
+    def _pick_traffic_source(self):
+        """Weighted random traffic source. Returns (source_type, referer_url, landing_url, keyword)."""
+        roll = random.random()
+        cumulative = 0.0
+        source_type = "google_organic"  # default fallback
+
+        for src_type, weight in TRAFFIC_SOURCES.items():
+            cumulative += weight
+            if roll < cumulative:
+                source_type = src_type
+                break
+
+        if source_type == "google_organic":
+            kw = random.choice(KEYWORDS)
+            # No UTM — Referer header alone does GA4 organic attribution
+            return source_type, "https://www.google.com/", TARGET_URL, kw
+
+        elif source_type == "social_referral":
+            src = random.choice(SOCIAL_REFERRERS)
+            landing = f"{TARGET_URL}/?utm_source={src['utm_source']}&utm_medium={src['utm_medium']}"
+            return source_type, src["referer"], landing, None
+
+        elif source_type == "ai_assistant":
+            src = random.choice(AI_REFERRERS)
+            landing = f"{TARGET_URL}/?utm_source={src['utm_source']}&utm_medium={src['utm_medium']}"
+            return source_type, src["referer"], landing, None
+
+        else:  # other_organic
+            kw = random.choice(KEYWORDS)
+            src = random.choice(OTHER_SEARCH_ENGINES)
+            return source_type, src["referer"], TARGET_URL, kw
+
+    # ==================== MAIN SIMULATION LOOP ====================
 
     def simulate_human(self):
-        """Main bot loop with human-like behavior."""
+        """Main bot loop — realistic multi-page sessions with proper GA4 events."""
         while not self.stop_event.is_set():
             with self.proxy_lock:
                 if not self.working_proxies:
                     self.stop_event.wait(5)
                     continue
                 proxy = random.choice(self.working_proxies)
-                
-            sess = self.get_session(proxy)
-            # Consistent GA4 Client ID for the entire lifecycle of this "user"
-            client_id = f"{random.randint(100000000, 999999999)}.{random.randint(1000000000, 2147483647)}"
-            
-            try:
-                # 85% Organic Search Path, 15% Social/Direct Referrer Path
-                if random.random() < 0.85:
-                    kw = random.choice(KEYWORDS)
-                    logger.info(f"[SEARCH] Routing through Google for: {kw}")
-                    sess.headers.update({"Referer": "https://www.google.com/"})
-                    
-                    # 1. Simulate Google Search Action
-                    sess.get(f"https://www.google.com/search?q={quote(kw)}&sourceid=chrome&ie=UTF-8", timeout=40)
-                    self.stop_event.wait(random.uniform(GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX))
-                    
-                    # 2. Click result with UTM parameters for tracking
-                    target_entry = f"{TARGET_URL}/?utm_source=google&utm_medium=organic&utm_campaign=seo&utm_term={quote(kw)}"
-                    dwell_time = random.uniform(DWELL_MIN, DWELL_MAX)
-                    end_time = time.time() + dwell_time
-                    
-                    events = self.fire_analytics(sess, target_entry, client_id)
-                    
-                    # 3. Simulate page interaction (Scroll)
-                    while time.time() < end_time and not self.stop_event.is_set():
-                        # Random scroll events to trigger HEATMAPS and behavior trackers
-                        sess.get(f"{TARGET_URL}/?action=scroll&pos={random.randint(500, 5000)}", timeout=10)
-                        if random.random() < 0.15:
-                            events += self.fire_analytics(sess, target_entry, client_id)
-                        self.stop_event.wait(random.uniform(15, 45))
 
-                    self.log_visit("ORGANIC", "home", proxy.get("ip", "0.0.0.0"), proxy.get("country", "XX"), dwell_time, events)
-                    with self.stats_lock:
-                        self.search_clicks += 1
-                        self.analytics_fired_count += events
+            sess, device = self.get_session(proxy)
+            client_id = f"{random.randint(100000000, 999999999)}.{random.randint(1000000000, 2147483647)}"
+            session_id = str(random.randint(1000000000, 9999999999))
+            screen_res = device["_res"]
+            events_fired = 0
+            pages_visited = []
+
+            try:
+                # 1. Pick traffic source
+                source_type, referer_url, landing_url, keyword = self._pick_traffic_source()
+                sess.headers["Referer"] = referer_url
+
+                # For organic search, simulate Google search page visit first
+                if source_type in ("google_organic", "other_organic") and keyword:
+                    logger.info(f"[SEARCH] {source_type}: '{keyword}'")
+                    try:
+                        search_base = referer_url.rstrip("/")
+                        sess.get(f"{search_base}/search?q={quote(keyword)}&sourceid=chrome&ie=UTF-8", timeout=40)
+                    except Exception:
+                        pass
+                    self.stop_event.wait(random.uniform(GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX))
+                    if self.stop_event.is_set():
+                        continue
                 else:
-                    # Diversified Referrers for "Direct" traffic
-                    referrers = ["https://www.facebook.com/", "https://t.co/", "https://www.linkedin.com/", ""]
-                    ref = random.choice(referrers)
-                    if ref: sess.headers.update({"Referer": ref})
-                    
-                    events = self.fire_analytics(sess, TARGET_URL, client_id)
-                    self.log_visit("DIRECT/SOCIAL", "home", proxy.get("ip", "0.0.0.0"), proxy.get("country", "XX"), 45, events)
-                    with self.stats_lock:
-                        self.analytics_fired_count += events
-                        
+                    logger.info(f"[{source_type.upper()}] Visiting via {referer_url}")
+
+                # 2. Land on target — check for errors (fixes 500s)
+                title, status = self.get_page_title(sess, landing_url)
+                if title is None:
+                    logger.debug(f"Landing page returned status {status}, skipping")
+                    self.stop_event.wait(random.uniform(3, 8))
+                    continue
+
+                pages_visited.append(landing_url)
+
+                # 3. Fire session_start + first_visit + page_view (first page only)
+                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
+                                    "session_start", is_session_start=True, is_first_visit=True,
+                                    referrer=referer_url, screen_res=screen_res)
+                events_fired += 1
+
+                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
+                                    "first_visit", is_first_visit=True,
+                                    referrer=referer_url, screen_res=screen_res)
+                events_fired += 1
+
+                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
+                                    "page_view", is_session_start=True, is_first_visit=True,
+                                    referrer=referer_url, screen_res=screen_res)
+                events_fired += 1
+
+                # 4. Dwell on landing page
+                dwell = random.uniform(15, 60)
+                self.stop_event.wait(dwell)
+                if self.stop_event.is_set():
+                    break
+
+                # 5. Engagement event with realistic timing
+                engagement_ms = int(dwell * 1000) + random.randint(0, 5000)
+                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
+                                    "user_engagement", engagement_time=engagement_ms,
+                                    screen_res=screen_res)
+                events_fired += 1
+
+                # 30% scroll on landing page
+                if random.random() < 0.3:
+                    self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
+                                        "scroll", screen_res=screen_res)
+                    events_fired += 1
+
+                # 6. Multi-page navigation
+                num_extra_pages = random.randint(PAGES_PER_SESSION_MIN - 1, PAGES_PER_SESSION_MAX - 1)
+                current_url = landing_url
+                session_dwell = dwell
+
+                for _ in range(num_extra_pages):
+                    if self.stop_event.is_set():
+                        break
+
+                    # Discover links from current page
+                    links = self.discover_internal_links(sess, current_url)
+                    if not links:
+                        # Fallback to known internal paths
+                        links = [TARGET_URL.rstrip("/") + p for p in INTERNAL_PATHS]
+
+                    # Prefer unvisited pages
+                    unvisited = [l for l in links if l not in pages_visited]
+                    if not unvisited:
+                        unvisited = links
+
+                    next_url = random.choice(unvisited)
+
+                    # Fire click event before navigating
+                    self.fire_ga4_event(sess, current_url, title, client_id, session_id,
+                                        "click", screen_res=screen_res)
+                    events_fired += 1
+
+                    # Small delay for "click" action
+                    self.stop_event.wait(random.uniform(0.5, 2.0))
+
+                    # Navigate to next page — skip if error
+                    next_title, next_status = self.get_page_title(sess, next_url)
+                    if next_title is None:
+                        logger.debug(f"Internal page {next_url} returned {next_status}, skipping")
+                        continue
+
+                    pages_visited.append(next_url)
+                    title = next_title
+                    current_url = next_url
+
+                    # Fire page_view (no session_start/first_visit on subsequent pages)
+                    self.fire_ga4_event(sess, next_url, next_title, client_id, session_id,
+                                        "page_view", screen_res=screen_res)
+                    events_fired += 1
+
+                    # Dwell on page
+                    page_dwell = random.uniform(10, 45)
+                    self.stop_event.wait(page_dwell)
+                    session_dwell += page_dwell
+                    if self.stop_event.is_set():
+                        break
+
+                    # Engagement event
+                    page_engagement_ms = int(page_dwell * 1000) + random.randint(0, 3000)
+                    self.fire_ga4_event(sess, next_url, next_title, client_id, session_id,
+                                        "user_engagement", engagement_time=page_engagement_ms,
+                                        screen_res=screen_res)
+                    events_fired += 1
+
+                    # 30% chance scroll event
+                    if random.random() < 0.3:
+                        self.fire_ga4_event(sess, next_url, next_title, client_id, session_id,
+                                            "scroll", screen_res=screen_res)
+                        events_fired += 1
+
+                # 7. Log completed session
+                self.log_visit(
+                    source_type.upper(),
+                    ",".join(urlparse(p).path or "/" for p in pages_visited),
+                    proxy.get("ip", "0.0.0.0"),
+                    proxy.get("country", "XX"),
+                    session_dwell,
+                    events_fired
+                )
+
+                with self.stats_lock:
+                    if source_type in ("google_organic", "other_organic"):
+                        self.search_clicks += 1
+                    self.analytics_fired_count += events_fired
+
+                # Pause between sessions
+                self.stop_event.wait(random.uniform(5, 15))
+
             except Exception as e:
                 logger.debug(f"Worker iteration failed: {e}")
                 self.stop_event.wait(5)
+
+    # ==================== LOGGING & STATS ====================
 
     def log_visit(self, type_, page, ip, country, dwell, fired):
         with self.stats_lock:
@@ -267,7 +501,7 @@ class SEOBoosterBot:
             if country != "XX":
                 self.unique_countries.add(country)
             self.unique_pages.add(page)
-            
+
             try:
                 with open(self.log_path, "a", newline="", encoding="utf-8") as f:
                     csv.writer(f).writerow([
@@ -282,11 +516,11 @@ class SEOBoosterBot:
             uptime = 0
             if self.start_time:
                 uptime = (datetime.now() - self.start_time).total_seconds()
-            
+
             countries = list(self.unique_countries)
             top_countries = countries[:5]
             country_str = ", ".join(top_countries) if top_countries else "N/A"
-            
+
             return {
                 "visits": self.successful_visits,
                 "unique_countries": len(countries),
@@ -299,6 +533,8 @@ class SEOBoosterBot:
                 "threads": THREADS,
                 "target_url": TARGET_URL
             }
+
+    # ==================== START / STOP ====================
 
     def start(self):
         if self.is_running: return False
