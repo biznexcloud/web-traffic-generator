@@ -161,16 +161,22 @@ class SEOBoosterBot:
             pass
         return None
 
-    def fire_ga4_event(self, sess, url, title, client_id, session_id, event_name,
-                       engagement_time=None, is_first_visit=False, is_session_start=False,
-                       referrer=None, screen_res="1920x1080"):
-        """Fire a single GA4 collect event. Returns True on success."""
+    def fire_ga4_event(self, sess, url, title, client_id, session_id, page_id,
+                       event_name, hit_seq=1, engagement_time=None,
+                       is_first_visit=False, is_session_start=False,
+                       referrer=None, screen_res="1920x1080",
+                       campaign_source=None, campaign_medium=None,
+                       campaign_term=None, percent_scrolled=None,
+                       link_url=None):
+        """Fire a single authentic GA4 collect event with proper origin headers and params."""
         try:
             tid = self._resolve_ga4_tid(sess)
             if not tid:
                 return False
 
-            page_id = str(random.randint(100000000, 9999999999))
+            parsed_url = urlparse(url)
+            origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
             params = {
                 "v": "2",
                 "tid": tid,
@@ -182,21 +188,53 @@ class SEOBoosterBot:
                 "ul": "en-us",
                 "en": event_name,
                 "sid": session_id,
-                "_s": "1",
+                "_s": str(hit_seq),
+                "_sct": "1",
+                "_seg": "1",
             }
 
+            # Document referrer (where user came from)
             if referrer:
                 params["dr"] = referrer
+
+            # Session / visit flags (only on initial hit)
             if is_session_start:
                 params["_ss"] = "1"
-                params["seg"] = "1"
             if is_first_visit:
                 params["_fv"] = "1"
+
+            # Engagement time in milliseconds
             if engagement_time:
                 params["_et"] = str(engagement_time)
 
+            # Campaign source / medium / keyword attribution (guarantees non-direct in GA4)
+            if campaign_source:
+                params["cs"] = campaign_source
+            if campaign_medium:
+                params["cm"] = campaign_medium
+            if campaign_term:
+                params["ck"] = campaign_term
+                params["cn"] = "organic_search"
+
+            # Event-specific parameters
+            if percent_scrolled:
+                params["epn.percent_scrolled"] = str(percent_scrolled)
+            if link_url:
+                params["ep.link_url"] = link_url
+
+            # Crucial: HTTP headers on the collect request must match the webpage origin
+            # In real browsers, gtag.js sends collect hits FROM the target domain
+            collect_headers = {
+                "Referer": url,
+                "Origin": origin,
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Dest": "empty",
+            }
+
             query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-            sess.get(f"https://www.google-analytics.com/g/collect?{query}", timeout=10)
+            sess.get(f"https://www.google-analytics.com/g/collect?{query}",
+                     headers=collect_headers, timeout=10)
             return True
         except Exception as e:
             logger.debug(f"GA4 event '{event_name}' failed: {e}")
@@ -286,17 +324,16 @@ class SEOBoosterBot:
             p = proxy_data["proxy"]
             s.proxies = {"http": p, "https": p}
 
-        # Attach resolution to profile for GA4 use
         profile["_res"] = res
         return s, profile
 
     # ==================== TRAFFIC SOURCE SELECTION ====================
 
     def _pick_traffic_source(self):
-        """Weighted random traffic source. Returns (source_type, referer_url, landing_url, keyword)."""
+        """Weighted random traffic source. Returns (source_type, referer_url, landing_url, keyword, cs, cm)."""
         roll = random.random()
         cumulative = 0.0
-        source_type = "google_organic"  # default fallback
+        source_type = "google_organic"
 
         for src_type, weight in TRAFFIC_SOURCES.items():
             cumulative += weight
@@ -306,23 +343,22 @@ class SEOBoosterBot:
 
         if source_type == "google_organic":
             kw = random.choice(KEYWORDS)
-            # No UTM — Referer header alone does GA4 organic attribution
-            return source_type, "https://www.google.com/", TARGET_URL, kw
+            return source_type, "https://www.google.com/", TARGET_URL, kw, "google", "organic"
 
         elif source_type == "social_referral":
             src = random.choice(SOCIAL_REFERRERS)
             landing = f"{TARGET_URL}/?utm_source={src['utm_source']}&utm_medium={src['utm_medium']}"
-            return source_type, src["referer"], landing, None
+            return source_type, src["referer"], landing, None, src["utm_source"], src["utm_medium"]
 
         elif source_type == "ai_assistant":
             src = random.choice(AI_REFERRERS)
             landing = f"{TARGET_URL}/?utm_source={src['utm_source']}&utm_medium={src['utm_medium']}"
-            return source_type, src["referer"], landing, None
+            return source_type, src["referer"], landing, None, src["utm_source"], src["utm_medium"]
 
         else:  # other_organic
             kw = random.choice(KEYWORDS)
             src = random.choice(OTHER_SEARCH_ENGINES)
-            return source_type, src["referer"], TARGET_URL, kw
+            return source_type, src["referer"], TARGET_URL, kw, src["engine"], "organic"
 
     # ==================== MAIN SIMULATION LOOP ====================
 
@@ -336,18 +372,23 @@ class SEOBoosterBot:
                 proxy = random.choice(self.working_proxies)
 
             sess, device = self.get_session(proxy)
-            client_id = f"{random.randint(100000000, 999999999)}.{random.randint(1000000000, 2147483647)}"
-            session_id = str(random.randint(1000000000, 9999999999))
+
+            # Authentic GA4 IDs: sid = Unix timestamp, cid = random.past_timestamp
+            now_epoch = int(time.time())
+            session_id = str(now_epoch)
+            past_epoch = now_epoch - random.randint(3600, 86400 * 30)
+            client_id = f"{random.randint(100000000, 999999999)}.{past_epoch}"
+
             screen_res = device["_res"]
             events_fired = 0
             pages_visited = []
 
             try:
-                # 1. Pick traffic source
-                source_type, referer_url, landing_url, keyword = self._pick_traffic_source()
+                # 1. Pick traffic source with explicit campaign attribution
+                source_type, referer_url, landing_url, keyword, cs, cm = self._pick_traffic_source()
                 sess.headers["Referer"] = referer_url
 
-                # For organic search, simulate Google search page visit first
+                # For search engines, simulate the search engine query visit first
                 if source_type in ("google_organic", "other_organic") and keyword:
                     logger.info(f"[SEARCH] {source_type}: '{keyword}'")
                     try:
@@ -361,7 +402,7 @@ class SEOBoosterBot:
                 else:
                     logger.info(f"[{source_type.upper()}] Visiting via {referer_url}")
 
-                # 2. Land on target — check for errors (fixes 500s)
+                # 2. Land on target — check for errors (skips 500s)
                 title, status = self.get_page_title(sess, landing_url)
                 if title is None:
                     logger.debug(f"Landing page returned status {status}, skipping")
@@ -369,22 +410,20 @@ class SEOBoosterBot:
                     continue
 
                 pages_visited.append(landing_url)
+                page_id = str(random.randint(100000000, 999999999))
+                hit_seq = 1
 
-                # 3. Fire session_start + first_visit + page_view (first page only)
-                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
-                                    "session_start", is_session_start=True, is_first_visit=True,
-                                    referrer=referer_url, screen_res=screen_res)
-                events_fired += 1
-
-                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
-                                    "first_visit", is_first_visit=True,
-                                    referrer=referer_url, screen_res=screen_res)
-                events_fired += 1
-
-                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
-                                    "page_view", is_session_start=True, is_first_visit=True,
-                                    referrer=referer_url, screen_res=screen_res)
-                events_fired += 1
+                # 3. Fire initial page_view with session_start + first_visit + source/medium attribution
+                # This single hit establishes user, session, and source in GA4 without anomalies
+                if self.fire_ga4_event(
+                    sess=sess, url=landing_url, title=title,
+                    client_id=client_id, session_id=session_id, page_id=page_id,
+                    event_name="page_view", hit_seq=hit_seq,
+                    is_session_start=True, is_first_visit=True,
+                    referrer=referer_url, screen_res=screen_res,
+                    campaign_source=cs, campaign_medium=cm, campaign_term=keyword
+                ):
+                    events_fired += 1
 
                 # 4. Dwell on landing page
                 dwell = random.uniform(15, 60)
@@ -392,20 +431,29 @@ class SEOBoosterBot:
                 if self.stop_event.is_set():
                     break
 
-                # 5. Engagement event with realistic timing
+                # 5. Engagement event (shares same page_id, incrementing hit_seq)
+                hit_seq += 1
                 engagement_ms = int(dwell * 1000) + random.randint(0, 5000)
-                self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
-                                    "user_engagement", engagement_time=engagement_ms,
-                                    screen_res=screen_res)
-                events_fired += 1
+                if self.fire_ga4_event(
+                    sess=sess, url=landing_url, title=title,
+                    client_id=client_id, session_id=session_id, page_id=page_id,
+                    event_name="user_engagement", hit_seq=hit_seq,
+                    engagement_time=engagement_ms, screen_res=screen_res
+                ):
+                    events_fired += 1
 
                 # 30% scroll on landing page
                 if random.random() < 0.3:
-                    self.fire_ga4_event(sess, landing_url, title, client_id, session_id,
-                                        "scroll", screen_res=screen_res)
-                    events_fired += 1
+                    hit_seq += 1
+                    if self.fire_ga4_event(
+                        sess=sess, url=landing_url, title=title,
+                        client_id=client_id, session_id=session_id, page_id=page_id,
+                        event_name="scroll", hit_seq=hit_seq,
+                        screen_res=screen_res, percent_scrolled=90
+                    ):
+                        events_fired += 1
 
-                # 6. Multi-page navigation
+                # 6. Multi-page navigation loop
                 num_extra_pages = random.randint(PAGES_PER_SESSION_MIN - 1, PAGES_PER_SESSION_MAX - 1)
                 current_url = landing_url
                 session_dwell = dwell
@@ -414,26 +462,30 @@ class SEOBoosterBot:
                     if self.stop_event.is_set():
                         break
 
-                    # Discover links from current page
                     links = self.discover_internal_links(sess, current_url)
                     if not links:
-                        # Fallback to known internal paths
                         links = [TARGET_URL.rstrip("/") + p for p in INTERNAL_PATHS]
 
-                    # Prefer unvisited pages
                     unvisited = [l for l in links if l not in pages_visited]
                     if not unvisited:
                         unvisited = links
 
                     next_url = random.choice(unvisited)
 
-                    # Fire click event before navigating
-                    self.fire_ga4_event(sess, current_url, title, client_id, session_id,
-                                        "click", screen_res=screen_res)
-                    events_fired += 1
+                    # Fire click event on current page before following link
+                    hit_seq += 1
+                    if self.fire_ga4_event(
+                        sess=sess, url=current_url, title=title,
+                        client_id=client_id, session_id=session_id, page_id=page_id,
+                        event_name="click", hit_seq=hit_seq,
+                        screen_res=screen_res, link_url=next_url
+                    ):
+                        events_fired += 1
 
-                    # Small delay for "click" action
                     self.stop_event.wait(random.uniform(0.5, 2.0))
+
+                    # Update HTTP Referer header for the internal page GET
+                    sess.headers["Referer"] = current_url
 
                     # Navigate to next page — skip if error
                     next_title, next_status = self.get_page_title(sess, next_url)
@@ -442,33 +494,49 @@ class SEOBoosterBot:
                         continue
 
                     pages_visited.append(next_url)
-                    title = next_title
+                    previous_url = current_url
                     current_url = next_url
+                    title = next_title
+                    page_id = str(random.randint(100000000, 999999999))  # New page_id for new page
 
-                    # Fire page_view (no session_start/first_visit on subsequent pages)
-                    self.fire_ga4_event(sess, next_url, next_title, client_id, session_id,
-                                        "page_view", screen_res=screen_res)
-                    events_fired += 1
+                    # Fire page_view on new page (internal referrer, no session_start/first_visit)
+                    hit_seq += 1
+                    if self.fire_ga4_event(
+                        sess=sess, url=next_url, title=next_title,
+                        client_id=client_id, session_id=session_id, page_id=page_id,
+                        event_name="page_view", hit_seq=hit_seq,
+                        referrer=previous_url, screen_res=screen_res
+                    ):
+                        events_fired += 1
 
-                    # Dwell on page
+                    # Dwell on internal page
                     page_dwell = random.uniform(10, 45)
                     self.stop_event.wait(page_dwell)
                     session_dwell += page_dwell
                     if self.stop_event.is_set():
                         break
 
-                    # Engagement event
+                    # Engagement event on internal page
+                    hit_seq += 1
                     page_engagement_ms = int(page_dwell * 1000) + random.randint(0, 3000)
-                    self.fire_ga4_event(sess, next_url, next_title, client_id, session_id,
-                                        "user_engagement", engagement_time=page_engagement_ms,
-                                        screen_res=screen_res)
-                    events_fired += 1
-
-                    # 30% chance scroll event
-                    if random.random() < 0.3:
-                        self.fire_ga4_event(sess, next_url, next_title, client_id, session_id,
-                                            "scroll", screen_res=screen_res)
+                    if self.fire_ga4_event(
+                        sess=sess, url=next_url, title=next_title,
+                        client_id=client_id, session_id=session_id, page_id=page_id,
+                        event_name="user_engagement", hit_seq=hit_seq,
+                        engagement_time=page_engagement_ms, screen_res=screen_res
+                    ):
                         events_fired += 1
+
+                    # 30% chance scroll on internal page
+                    if random.random() < 0.3:
+                        hit_seq += 1
+                        if self.fire_ga4_event(
+                            sess=sess, url=next_url, title=next_title,
+                            client_id=client_id, session_id=session_id, page_id=page_id,
+                            event_name="scroll", hit_seq=hit_seq,
+                            screen_res=screen_res, percent_scrolled=90
+                        ):
+                            events_fired += 1
 
                 # 7. Log completed session
                 self.log_visit(
