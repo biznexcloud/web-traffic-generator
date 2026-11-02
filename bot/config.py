@@ -7,8 +7,9 @@ load_dotenv(Path(__file__).resolve().parent.parent / '.env')
 
 # ==================== CONFIG ====================
 
-# Target Website
-TARGET_URL = os.getenv("TARGET_URL", "https://restromandu.com")
+# Target Website (normalized with trailing slash for canonical GA4 paths)
+_raw_target = os.getenv("TARGET_URL", "https://restromandu.com").strip()
+TARGET_URL = _raw_target if _raw_target.endswith("/") else f"{_raw_target}/"
 
 # Proxy Settings
 # Support for authenticated proxies: "http://user:pass@host:port" or "socks5://user:pass@host:port"
@@ -76,12 +77,12 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "Ramesh@5611")
 
-# --------------- Traffic Source Distribution ---------------
+# --------------- Traffic Source Distribution (100% Non-Direct) ---------------
 TRAFFIC_SOURCES = {
-    "google_organic": 0.60,
-    "social_referral": 0.20,
-    "ai_assistant": 0.10,
-    "other_organic": 0.10,
+    "google_organic": 0.55,
+    "social_referral": 0.15,
+    "ai_assistant": 0.15,
+    "other_organic": 0.15,
 }
 
 SOCIAL_REFERRERS = [
@@ -89,16 +90,27 @@ SOCIAL_REFERRERS = [
     {"referer": "https://www.linkedin.com/feed/", "utm_source": "linkedin.com", "utm_medium": "referral"},
     {"referer": "https://t.co/abc123", "utm_source": "twitter", "utm_medium": "social"},
     {"referer": "https://www.linkedin.com/posts/", "utm_source": "linkedin", "utm_medium": "social"},
+    {"referer": "https://www.instagram.com/", "utm_source": "instagram", "utm_medium": "social"},
 ]
 
 AI_REFERRERS = [
     {"referer": "https://chatgpt.com/", "utm_source": "chatgpt.com", "utm_medium": "ai-assistant"},
+    {"referer": "https://claude.ai/", "utm_source": "claude.ai", "utm_medium": "ai-assistant"},
+    {"referer": "https://www.perplexity.ai/", "utm_source": "perplexity.ai", "utm_medium": "ai-assistant"},
 ]
 
 OTHER_SEARCH_ENGINES = [
     {"referer": "https://www.bing.com/", "engine": "bing"},
     {"referer": "https://duckduckgo.com/", "engine": "duckduckgo"},
+    {"referer": "https://search.yahoo.com/", "engine": "yahoo"},
+    {"referer": "https://www.ecosia.org/", "engine": "ecosia"},
 ]
+
+# Returning User Simulation (Authentic Cohort Retention)
+RETURNING_USER_RATIO = float(os.getenv("RETURNING_USER_RATIO", 0.25))
+
+# Key Events / Conversion Simulation for Lead Generation (/contact/, /start-free-trial)
+KEY_EVENT_PROBABILITY = float(os.getenv("KEY_EVENT_PROBABILITY", 0.05))
 
 # --------------- Multi-Page Navigation ---------------
 INTERNAL_PATHS = ["/news/", "/about/", "/contact/"]
