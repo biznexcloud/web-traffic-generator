@@ -60,7 +60,7 @@ if _env_keywords and _env_keywords.strip():
     KEYWORDS = [k.strip() for k in _env_keywords.split(",") if k.strip()]
 
 # Threading & Performance
-THREADS = int(os.getenv("THREADS", 21))
+THREADS = int(os.getenv("THREADS", 31))
 PROXY_ROTATE_INTERVAL = int(os.getenv("PROXY_ROTATE_INTERVAL", 1800))  # seconds
 PORT = int(os.getenv("PORT", 5000))
 
@@ -79,9 +79,9 @@ ADMIN_PASS = os.getenv("ADMIN_PASS", "Ramesh@5611")
 
 # --------------- Traffic Source Distribution (100% Non-Direct) ---------------
 TRAFFIC_SOURCES = {
-    "google_organic": 0.55,
+    "google_organic": 0.50,
     "social_referral": 0.15,
-    "ai_assistant": 0.15,
+    "ai_assistant": 0.20,
     "other_organic": 0.15,
 }
 
