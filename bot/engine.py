@@ -16,14 +16,12 @@ from curl_cffi.requests import BrowserType
 from bot.config import (
     TARGET_URL, KEYWORDS, THREADS, OUTPUT_FOLDER,
     PROXY_ROTATE_INTERVAL, PREMIUM_PROXIES,
-    DWELL_MIN, DWELL_MAX, INTERNAL_DWELL_MIN, INTERNAL_DWELL_MAX,
-    GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX,
+    DWELL_MIN, DWELL_MAX, INTERNAL_DWELL_MIN, INTERNAL_DWELL_MAX, GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX,
     TRAFFIC_SOURCES, SOCIAL_REFERRERS, AI_REFERRERS,
     OTHER_SEARCH_ENGINES, INTERNAL_PATHS,
     PAGES_PER_SESSION_MIN, PAGES_PER_SESSION_MAX, DEVICE_PROFILES,
-    RETURNING_USER_RATIO, MAX_RETURNING_POOL_SIZE, RETURNING_COHORT_WEIGHTS,
-    KEY_EVENT_PROBABILITY, LEAD_PAGES,
-    TARGET_COUNTRIES, COUNTRY_LANGUAGES,
+    RETURNING_USER_RATIO, KEY_EVENT_PROBABILITY, MAX_RETURNING_POOL_SIZE,
+    TARGET_COUNTRIES, COUNTRY_LANGUAGES, LEAD_PAGES, RETURNING_COHORT_WEIGHTS,
 )
 from bot.logger import logger
 
@@ -51,7 +49,7 @@ class SEOBoosterBot:
         self._ga4_tid: Optional[str] = None
         self._ga4_tid_lock = threading.Lock()
 
-        # Returning user profile pool (for authentic cohort retention) - PERSISTENT
+        # Returning user profile pool (for authentic cohort retention)
         self.returning_profiles = []
         self.returning_lock = threading.Lock()
         self.max_returning_pool_size = MAX_RETURNING_POOL_SIZE
@@ -62,11 +60,6 @@ class SEOBoosterBot:
         self.proxy_stats = {}  # proxy_url -> {"success": 0, "fail": 0, "last_used": 0}
         self.proxy_stats_lock = threading.Lock()
 
-        # Hit 1 success tracking for monitoring
-        self.hit1_attempts = 0
-        self.hit1_successes = 0
-        self.hit1_lock = threading.Lock()
-
         # Init CSV LOG
         self.log_path = os.path.join(OUTPUT_FOLDER, "traffic_log.csv")
         if not os.path.exists(self.log_path):
@@ -76,8 +69,6 @@ class SEOBoosterBot:
             except Exception as e:
                 logger.error(f"Failed to initialize log file: {e}")
 
-    # ==================== RETURNING USER PERSISTENCE ====================
-
     def load_returning_profiles(self):
         """Load returning user profiles from disk."""
         try:
@@ -85,8 +76,6 @@ class SEOBoosterBot:
                 with open(self.returning_profiles_path, 'r') as f:
                     self.returning_profiles = json.load(f)
                 logger.info(f"Loaded {len(self.returning_profiles)} returning user profiles from disk")
-            else:
-                self.returning_profiles = []
         except Exception as e:
             logger.error(f"Failed to load returning profiles: {e}")
             self.returning_profiles = []
@@ -99,10 +88,32 @@ class SEOBoosterBot:
         except Exception as e:
             logger.error(f"Failed to save returning profiles: {e}")
 
-    # ==================== PROXY POOL (ENHANCED) ====================
+    def update_proxy_stats(self, proxy_url, success):
+        """Track proxy success/failure for health monitoring."""
+        with self.proxy_stats_lock:
+            if proxy_url not in self.proxy_stats:
+                self.proxy_stats[proxy_url] = {"success": 0, "fail": 0, "last_used": 0}
+            if success:
+                self.proxy_stats[proxy_url]["success"] += 1
+            else:
+                self.proxy_stats[proxy_url]["fail"] += 1
+            self.proxy_stats[proxy_url]["last_used"] = time.time()
+
+    def is_proxy_healthy(self, proxy_url):
+        """Check if proxy has acceptable success rate."""
+        with self.proxy_stats_lock:
+            stats = self.proxy_stats.get(proxy_url)
+            if not stats:
+                return True  # Unknown proxy, give it a chance
+            total = stats["success"] + stats["fail"]
+            if total < 10:
+                return True  # Not enough data
+            return stats["success"] / total >= 0.3  # 30% minimum success rate
+
+    # ==================== PROXY POOL (UNTOUCHED) ====================
 
     def get_proxies(self):
-        """Scrape free proxies from various sources - EXPANDED to 22+ sources."""
+        """Scrape free proxies from various sources."""
         sources = [
             # Original 7 sources
             "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTP_RAW.txt",
@@ -141,96 +152,77 @@ class SEOBoosterBot:
                         line = line.strip()
                         if re.match(r"^\d+\.\d+\.\d+\.\d+:\d+$", line):
                             proxies.add(f"http://{line}")
-                        # Also handle socks5 format
-                        elif re.match(r"^socks5://\d+\.\d+\.\d+\.\d+:\d+$", line):
-                            proxies.add(line)
             except Exception as e:
                 logger.debug(f"Failed to fetch proxies from {url}: {e}")
-        logger.info(f"Scraped {len(proxies)} unique proxies from {len(sources)} sources")
         return list(proxies)
 
     def get_country_from_ip(self, ip):
         """Estimate country from IP."""
         if ip == "PREMIUM": return "US"
         try:
-            r = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode,asn,org", timeout=5)
+            r = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode,as,org", timeout=5)
             if r.status_code == 200:
                 data = r.json()
-                return data.get("countryCode", "XX"), data.get("asn", ""), data.get("org", "")
+                return data.get("countryCode", "XX"), data.get("as", ""), data.get("org", "")
         except: pass
         return "XX", "", ""
 
-    def is_residential_asn(self, asn_str: str, org_str: str) -> bool:
-        """Check if ASN/Org indicates residential ISP."""
-        if not asn_str and not org_str:
-            return False
-        combined = (asn_str + " " + org_str).lower()
-        # Datacenter/hosting/cloud keywords to EXCLUDE
-        datacenter_keywords = [
-            "hosting", "cloud", "datacenter", "data center", "server", "vps",
-            "digitalocean", "linode", "vultr", "aws", "amazon", "google cloud",
-            "azure", "microsoft", "ovh", "hetzner", "contabo", "leaseweb",
-            "choopa", "quadranet", "psychz", "sharktech", "frantech",
-            "colo", "colocation", "dedicated", "bare metal", "cdn",
-            "cloudflare", "fastly", "akamai", "incapsula", "sucuri",
-            "proxy", "vpn", "tor", "anonymous", "tor exit"
-        ]
-        for kw in datacenter_keywords:
-            if kw in combined:
-                return False
-        # Residential ISP keywords (positive indicators)
+    def is_residential_asn(self, asn_str, org_str):
+        """Detect if ASN/org indicates residential ISP."""
         residential_keywords = [
-            "telecom", "communications", "cable", "broadband", "fiber",
+            "telecom", "communications", "cable", "broadband", "fiber", "dsl",
             "isp", "internet service", "wireless", "mobile", "cellular",
-            "dsl", "ftth", "fttp", "gpone", "grameenphone", "robi",
-            "airtel", "jio", "vodafone", "idea", "bsnl", "mtnl",
-            "ntc", "ncell", "smart", "globe", "pldt", "converge",
-            "true", "dtac", "ais", "telkom", "indosat", "xl axiata",
-            "etisalat", "du", "stc", "mobily", "zain", "ooredoo",
-            "qtel", "vodafone qatar", "batelco", "stc bahrain"
+            "comcast", "verizon", "at&t", "charter", "cox", "spectrum",
+            "vodafone", "t-mobile", "orange", "telefonica", "bt group",
+            "sky broadband", "virgin media", "talk talk", "plusnet",
+            "jio", "airtel", "bsnl", "mtnl", "act fiber", "hathway",
+            "worldlink", "subisu", "vianet", "classic tech", "websterz"
         ]
+        text = f"{asn_str} {org_str}".lower()
         for kw in residential_keywords:
-            if kw in combined:
+            if kw in text:
                 return True
-        # Default: assume residential if not datacenter
-        return True
+        return False
 
-    def is_target_country(self, country: str) -> bool:
-        """Check if country is in target list."""
-        return country in TARGET_COUNTRIES
+    def is_datacenter_asn(self, asn_str, org_str):
+        """Detect if ASN/org indicates datacenter/cloud/hosting."""
+        datacenter_keywords = [
+            "amazon", "aws", "google cloud", "microsoft azure", "digitalocean",
+            "linode", "vultr", "hetzner", "ovh", "scaleway", "contabo",
+            "rackspace", "softlayer", "ibm cloud", "oracle cloud",
+            "datacenter", "data center", "hosting", "colo", "colocation",
+            "server", "vps", "cloud", "cdn", "content delivery",
+            "akamai", "cloudflare", "fastly", "maxcdn", "keycdn",
+            "choopa", "quadranet", "psychz", "multacom", "nlayer",
+            "cogent", "level3", "ntt", "gtc", "pccw", "tata communications"
+        ]
+        text = f"{asn_str} {org_str}".lower()
+        for kw in datacenter_keywords:
+            if kw in text:
+                return True
+        return False
 
-    def get_country_weight(self, country: str) -> float:
-        """Get weight for country (higher = more preferred)."""
-        return TARGET_COUNTRIES.get(country, 0.01)
-
-    def calculate_proxy_score(self, latency: float, is_residential: bool, country: str) -> int:
-        """Calculate proxy score based on latency, residential status, and geo."""
-        score = 0
-        # Latency score (0-40)
-        if latency < 100:
-            score += 40
-        elif latency < 200:
-            score += 35
-        elif latency < 300:
-            score += 30
+    def calculate_proxy_score(self, latency, is_residential, is_datacenter, country):
+        """Score proxy based on latency, residential status, and geo-targeting."""
+        # Base score from latency
+        if latency < 200:
+            score = 100
         elif latency < 500:
-            score += 25
-        elif latency < 800:
-            score += 15
+            score = 85
         else:
-            score += 5
+            score = 70
 
-        # Residential bonus (0-30)
+        # Residential bonus (major factor for GA4 acceptance)
         if is_residential:
-            score += 30
-        else:
-            score += 5  # Datacenter penalty
+            score += 20
+        elif is_datacenter:
+            score -= 30  # Penalize datacenter IPs
 
-        # Geo bonus (0-30) - prefer target countries
-        country_weight = self.get_country_weight(country)
-        score += int(country_weight * 3000)  # Scale up
+        # Geo-targeting bonus
+        target_weight = TARGET_COUNTRIES.get(country, 0)
+        score += target_weight * 100  # Up to 35 points for Nepal
 
-        return min(score, 100)
+        return max(0, min(100, score))
 
     def test_proxy(self, p_url):
         """Test proxy speed, anonymity, and residential quality."""
@@ -246,15 +238,9 @@ class SEOBoosterBot:
                 ip = r.json()["origin"].split(",")[0]
                 country, asn, org = self.get_country_from_ip(ip)
                 is_residential = self.is_residential_asn(asn, org)
-                score = self.calculate_proxy_score(latency, is_residential, country)
-
-                # Track proxy stats
-                with self.proxy_stats_lock:
-                    if p_url not in self.proxy_stats:
-                        self.proxy_stats[p_url] = {"success": 0, "fail": 0, "last_used": 0}
-
-                return {"proxy": p_url, "ip": ip, "country": country, "score": score,
-                        "asn": asn, "org": org, "is_residential": is_residential, "latency": latency}
+                is_datacenter = self.is_datacenter_asn(asn, org)
+                score = self.calculate_proxy_score(latency, is_residential, is_datacenter, country)
+                return {"proxy": p_url, "ip": ip, "country": country, "score": score, "asn": asn, "org": org}
         except: pass
         return None
 
@@ -264,8 +250,7 @@ class SEOBoosterBot:
 
         pool = []
         for p in PREMIUM_PROXIES:
-            pool.append({"proxy": p, "ip": "PREMIUM", "country": "US", "score": 100,
-                        "is_residential": True, "latency": 50})
+            pool.append({"proxy": p, "ip": "PREMIUM", "country": "US", "score": 100, "asn": "", "org": ""})
 
         raw_list = self.get_proxies()
         if raw_list:
@@ -273,19 +258,14 @@ class SEOBoosterBot:
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(raw_list) + 1, 100)) as ex:
                 results = list(ex.map(self.test_proxy, raw_list))
 
-            good_free = [p for p in results if p and p.get("score", 0) >= 50]
+            good_free = [p for p in results if p and p.get("score", 0) >= 50]  # Lower threshold for free proxies
             good_free.sort(key=lambda x: x.get("score", 0), reverse=True)
             pool.extend(good_free[:500])
 
         with self.proxy_lock:
             self.working_proxies = pool
 
-        # Log proxy quality summary
-        residential_count = sum(1 for p in pool if p.get("is_residential", False))
-        target_country_count = sum(1 for p in pool if self.is_target_country(p.get("country", "XX")))
-        logger.info(f"[PROXY] Pool refreshed. Total: {len(self.working_proxies)} "
-                    f"(Premium: {len(PREMIUM_PROXIES)}, Residential: {residential_count}, "
-                    f"Target Countries: {target_country_count})")
+        logger.info(f"[PROXY] Pool refreshed. Total: {len(self.working_proxies)} (Premium: {len(PREMIUM_PROXIES)})")
 
     def proxy_refresher(self):
         while not self.stop_event.is_set():
@@ -293,35 +273,14 @@ class SEOBoosterBot:
                 break
             self.build_proxy_pool()
 
-    def record_proxy_result(self, proxy_url: str, success: bool):
-        """Track proxy success/failure for health monitoring."""
-        with self.proxy_stats_lock:
-            if proxy_url not in self.proxy_stats:
-                self.proxy_stats[proxy_url] = {"success": 0, "fail": 0, "last_used": time.time()}
-            if success:
-                self.proxy_stats[proxy_url]["success"] += 1
-            else:
-                self.proxy_stats[proxy_url]["fail"] += 1
-            self.proxy_stats[proxy_url]["last_used"] = time.time()
-
-    def is_proxy_healthy(self, proxy_url: str) -> bool:
-        """Check if proxy has acceptable success rate."""
-        with self.proxy_stats_lock:
-            stats = self.proxy_stats.get(proxy_url, {"success": 0, "fail": 0})
-            total = stats["success"] + stats["fail"]
-            if total < 10:
-                return True  # Not enough data yet
-            return (stats["success"] / total) >= 0.3  # 30% minimum success rate
-
     # ==================== GA4 ANALYTICS ====================
 
     def _resolve_ga4_tid(self, sess, max_retries=3):
         """Fetch and cache GA4 measurement ID from target site with retry."""
-        with self._ga4_tid_lock:
-            if self._ga4_tid:
-                return self._ga4_tid
-
         for attempt in range(max_retries):
+            with self._ga4_tid_lock:
+                if self._ga4_tid:
+                    return self._ga4_tid
             try:
                 r = sess.get(TARGET_URL, timeout=30)
                 if r.status_code == 200:
@@ -332,9 +291,9 @@ class SEOBoosterBot:
                             self._ga4_tid = tid
                         return tid
             except Exception as e:
-                logger.debug(f"GA4 TID resolution attempt {attempt+1} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(1)
+                logger.debug(f"GA4 TID resolve attempt {attempt+1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                self.stop_event.wait(2)
         return None
 
     def fire_ga4_event(self, sess, url, title, client_id, session_id, page_id,
@@ -348,11 +307,6 @@ class SEOBoosterBot:
                        custom_params=None, country="XX"):
         """Fire a single authentic GA4 collect event with proper origin headers and params."""
         try:
-            # CRITICAL: Validate campaign attribution for session_start
-            if is_session_start and (not campaign_source or not campaign_medium):
-                logger.error(f"[GA4] Missing campaign attribution for session_start! source={campaign_source}, medium={campaign_medium}")
-                return False
-
             tid = self._resolve_ga4_tid(sess)
             if not tid:
                 return False
@@ -360,7 +314,7 @@ class SEOBoosterBot:
             parsed_url = urlparse(url)
             origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
-            # Set language based on country
+            # Language based on country
             ul = random.choice(COUNTRY_LANGUAGES.get(country, ["en-US"]))
 
             params = {
@@ -387,7 +341,7 @@ class SEOBoosterBot:
             if is_engaged or hit_seq > 1:
                 params["_seg"] = "1"
 
-            # Document referrer (where user came from) - CRITICAL for non-direct
+            # Document referrer (where user came from)
             if referrer:
                 params["dr"] = referrer
 
@@ -411,14 +365,14 @@ class SEOBoosterBot:
             if campaign_name:
                 params["cn"] = campaign_name
 
-            # Search Console simulation: add query (cq) and position (cps) for organic
+            # Search Console simulation for organic traffic
             if campaign_source == "google" and campaign_medium == "organic" and campaign_term:
-                params["cq"] = quote(campaign_term)
-                # Simulate search position: branded terms rank 1-5, generic 10-50
-                if "restromandu" in campaign_term.lower() or "restro mandu" in campaign_term.lower():
-                    params["cps"] = str(random.randint(1, 5))
+                params["cq"] = quote(campaign_term)  # Search query
+                # Search position simulation
+                if "restromandu" in campaign_term.lower():
+                    params["cps"] = str(random.randint(1, 5))  # Branded: position 1-5
                 else:
-                    params["cps"] = str(random.randint(10, 50))
+                    params["cps"] = str(random.randint(10, 50))  # Generic: position 10-50
 
             # Event-specific parameters
             if percent_scrolled:
@@ -497,9 +451,23 @@ class SEOBoosterBot:
     def get_session(self, proxy_data):
         """Create session with diverse browser fingerprint. Returns (session, profile)."""
         profile = self._pick_device_profile()
-        s = requests.Session(impersonate=BrowserType.chrome120, timeout=60)
 
-        chrome_ver = random.randint(120, 133)
+        # Choose impersonation based on browser
+        browser = profile["browser"]
+        if browser in ("Chrome", "Edge"):
+            impersonate = BrowserType.chrome120
+        elif browser == "Safari":
+            impersonate = BrowserType.safari15_5
+        elif browser == "Firefox":
+            impersonate = BrowserType.firefox120
+        elif browser == "SamsungBrowser":
+            impersonate = BrowserType.chrome120  # Samsung Browser is Chrome-based
+        else:
+            impersonate = BrowserType.chrome120
+
+        s = requests.Session(impersonate=impersonate, timeout=60)
+
+        chrome_ver = random.randint(120, 131)
         version = f"{chrome_ver}.0.{random.randint(6000, 7000)}.{random.randint(10, 200)}"
         minor = random.randint(1, 6)
 
@@ -521,8 +489,8 @@ class SEOBoosterBot:
             "Sec-Fetch-User": "?1",
         }
 
-        # Chrome and Edge send Sec-Ch-Ua headers
-        if profile["browser"] in ("Chrome", "Edge"):
+        # Chrome/Edge send Sec-Ch-Ua headers
+        if browser in ("Chrome", "Edge"):
             headers["Sec-Ch-Ua"] = f'"Not_A Brand";v="8", "Chromium";v="{chrome_ver}", "Google Chrome";v="{chrome_ver}"'
             headers["Sec-Ch-Ua-Mobile"] = "?1" if is_mobile else "?0"
             headers["Sec-Ch-Ua-Platform"] = f'"{profile["os"]}"'
@@ -536,14 +504,7 @@ class SEOBoosterBot:
         profile["_res"] = res
         return s, profile
 
-    # ==================== TRAFFIC SOURCE SELECTION (WEIGHTED) ====================
-
-    def _pick_weighted_referrer(self, referrers_list):
-        """Pick referrer based on weight field."""
-        if not referrers_list:
-            return None
-        weights = [r.get("weight", 1) for r in referrers_list]
-        return random.choices(referrers_list, weights=weights, k=1)[0]
+    # ==================== TRAFFIC SOURCE SELECTION ====================
 
     def _pick_traffic_source(self):
         """Weighted random traffic source. Returns (source_type, referer_url, landing_url, keyword, cs, cm)."""
@@ -564,18 +525,23 @@ class SEOBoosterBot:
             return source_type, "https://www.google.com/", base_target, kw, "google", "organic"
 
         elif source_type == "social_referral":
-            src = self._pick_weighted_referrer(SOCIAL_REFERRERS)
+            # Weighted selection for social referrers
+            weights = [s.get("weight", 1) for s in SOCIAL_REFERRERS]
+            src = random.choices(SOCIAL_REFERRERS, weights=weights, k=1)[0]
             landing = f"{base_target}?utm_source={src['utm_source']}&utm_medium={src['utm_medium']}"
             return source_type, src["referer"], landing, None, src["utm_source"], src["utm_medium"]
 
         elif source_type == "ai_assistant":
-            src = self._pick_weighted_referrer(AI_REFERRERS)
+            # Weighted selection for AI referrers
+            weights = [s.get("weight", 1) for s in AI_REFERRERS]
+            src = random.choices(AI_REFERRERS, weights=weights, k=1)[0]
             landing = f"{base_target}?utm_source={src['utm_source']}&utm_medium={src['utm_medium']}"
             return source_type, src["referer"], landing, None, src["utm_source"], src["utm_medium"]
 
         else:  # other_organic
             kw = random.choice(KEYWORDS)
-            src = self._pick_weighted_referrer(OTHER_SEARCH_ENGINES)
+            weights = [s.get("weight", 1) for s in OTHER_SEARCH_ENGINES]
+            src = random.choices(OTHER_SEARCH_ENGINES, weights=weights, k=1)[0]
             return source_type, src["referer"], base_target, kw, src["engine"], "organic"
 
     # ==================== MAIN SIMULATION LOOP ====================
@@ -583,16 +549,11 @@ class SEOBoosterBot:
     def simulate_human(self):
         """Main bot loop — realistic multi-page sessions with proper GA4 events."""
         while not self.stop_event.is_set():
-            # Get healthy proxy
             with self.proxy_lock:
                 if not self.working_proxies:
                     self.stop_event.wait(5)
                     continue
-                # Filter healthy proxies
-                healthy_proxies = [p for p in self.working_proxies if self.is_proxy_healthy(p.get("proxy", ""))]
-                if not healthy_proxies:
-                    healthy_proxies = self.working_proxies  # Fallback
-                proxy = random.choice(healthy_proxies)
+                proxy = random.choice(self.working_proxies)
 
             sess, device = self.get_session(proxy)
 
@@ -602,9 +563,9 @@ class SEOBoosterBot:
 
             with self.returning_lock:
                 if self.returning_profiles and random.random() < RETURNING_USER_RATIO:
-                    # Weight by cohort recency
-                    weights = []
+                    # Cohort-weighted selection: prefer recent profiles
                     now = time.time()
+                    weights = []
                     for p in self.returning_profiles:
                         age_days = (now - p.get("last_seen", now)) / 86400
                         if age_days <= 1:
@@ -637,14 +598,13 @@ class SEOBoosterBot:
                 sess.headers["Referer"] = referer_url
 
                 # For search engines, simulate the search engine query visit first
-                actual_search_referrer = referer_url
                 if source_type in ("google_organic", "other_organic") and keyword:
                     logger.info(f"[SEARCH] {source_type}: '{keyword}'")
                     try:
                         search_base = referer_url.rstrip("/")
-                        search_url = f"{search_base}/search?q={quote(keyword)}&sourceid=chrome&ie=UTF-8"
-                        sess.get(search_url, timeout=40)
-                        actual_search_referrer = search_url  # Use actual search URL as referrer
+                        actual_search_url = f"{search_base}/search?q={quote(keyword)}&sourceid=chrome&ie=UTF-8"
+                        sess.get(actual_search_url, timeout=40)
+                        referer_url = actual_search_url  # Use actual search URL as referrer for GA4 dr param
                     except Exception:
                         pass
                     self.stop_event.wait(random.uniform(GOOGLE_WAIT_MIN, GOOGLE_WAIT_MAX))
@@ -657,7 +617,6 @@ class SEOBoosterBot:
                 title, status = self.get_page_title(sess, landing_url)
                 if title is None:
                     logger.debug(f"Landing page returned status {status}, skipping")
-                    self.record_proxy_result(proxy.get("proxy", ""), False)
                     self.stop_event.wait(random.uniform(3, 8))
                     continue
 
@@ -666,7 +625,7 @@ class SEOBoosterBot:
                 hit_seq = 1
 
                 # 3. Fire initial page_view with session_start + (first_visit if new) + source/medium attribution
-                # RETRY LOGIC: Up to 3 attempts with proxy rotation
+                # RETRY LOGIC: Up to 3 attempts with proxy rotation to prevent "(not set)" landing pages
                 max_hit1_retries = 3
                 hit_1_ok = False
 
@@ -678,51 +637,31 @@ class SEOBoosterBot:
                         session_count=session_count,
                         is_session_start=True,
                         is_first_visit=(not is_returning),
-                        referrer=actual_search_referrer, screen_res=screen_res,
-                        campaign_source=cs, campaign_medium=cm, campaign_term=keyword,
-                        country=proxy.get("country", "XX")
+                        referrer=referer_url, screen_res=screen_res,
+                        campaign_source=cs, campaign_medium=cm, campaign_term=keyword
                     )
-
-                    with self.hit1_lock:
-                        self.hit1_attempts += 1
-                        if hit_1_ok:
-                            self.hit1_successes += 1
 
                     if hit_1_ok:
                         break
 
-                    # Rotate proxy on failure
-                    logger.debug(f"[GA4] Hit 1 attempt {attempt+1} failed. Rotating proxy...")
+                    logger.warning(f"[GA4] Hit 1 attempt {attempt+1}/{max_hit1_retries} failed. Rotating proxy...")
+
                     with self.proxy_lock:
                         if self.working_proxies:
                             proxy = random.choice(self.working_proxies)
                     sess, device = self.get_session(proxy)
-                    screen_res = device["_res"]
-                    # Re-pick traffic source
                     source_type, referer_url, landing_url, keyword, cs, cm = self._pick_traffic_source()
                     sess.headers["Referer"] = referer_url
-                    if source_type in ("google_organic", "other_organic") and keyword:
-                        try:
-                            search_base = referer_url.rstrip("/")
-                            search_url = f"{search_base}/search?q={quote(keyword)}&sourceid=chrome&ie=UTF-8"
-                            sess.get(search_url, timeout=40)
-                            actual_search_referrer = search_url
-                        except Exception:
-                            actual_search_referrer = referer_url
-                    else:
-                        actual_search_referrer = referer_url
-                    # Re-fetch page title
                     title, status = self.get_page_title(sess, landing_url)
                     if title is None:
-                        break
+                        continue
 
+                # Fail-fast: If Hit 1 fails after all retries, abort to prevent Direct/Unassigned leakage
                 if not hit_1_ok:
-                    logger.warning(f"[GA4] Hit 1 failed after {max_hit1_retries} retries. Aborting session to prevent Direct/Unassigned leakage.")
-                    self.record_proxy_result(proxy.get("proxy", ""), False)
+                    logger.debug(f"[GA4] Hit 1 failed after {max_hit1_retries} retries. Aborting session to prevent Direct/Unassigned leakage.")
                     self.stop_event.wait(random.uniform(2, 5))
                     continue
 
-                self.record_proxy_result(proxy.get("proxy", ""), True)
                 events_fired += 1
 
                 # If new user succeeded, store in returning pool
@@ -736,9 +675,9 @@ class SEOBoosterBot:
                             "source": source_type,
                             "last_seen": time.time()
                         })
-                        self.save_returning_profiles()
+                    self.save_returning_profiles()
 
-                # 4. Dwell on landing page (INCREASED)
+                # 4. Dwell on landing page
                 dwell = random.uniform(DWELL_MIN, DWELL_MAX)
                 self.stop_event.wait(dwell)
                 if self.stop_event.is_set():
@@ -757,7 +696,7 @@ class SEOBoosterBot:
                 ):
                     events_fired += 1
 
-                # Multi-point scroll on landing page (25%, 50%, 75%, 90%)
+                # Multi-point scroll on landing page (25/50/75/90)
                 scroll_points = [25, 50, 75, 90]
                 for sp in scroll_points:
                     if random.random() < 0.4:  # 40% chance per scroll point
@@ -772,6 +711,8 @@ class SEOBoosterBot:
                         ):
                             events_fired += 1
                         self.stop_event.wait(random.uniform(1, 3))
+                        if self.stop_event.is_set():
+                            break
 
                 # Key Event / Conversion Simulation if landing page is a lead-generating page
                 if any(p in landing_url for p in LEAD_PAGES) and random.random() < KEY_EVENT_PROBABILITY:
@@ -782,8 +723,8 @@ class SEOBoosterBot:
                         event_name="form_start", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
                         screen_res=screen_res,
-                        custom_params={"ep.form_id": "contact_lead_form", "ep.form_name": "Inquiry Form"},
-                        country=proxy.get("country", "XX")
+                        country=proxy.get("country", "XX"),
+                        custom_params={"ep.form_id": "contact_lead_form", "ep.form_name": "Inquiry Form"}
                     ):
                         events_fired += 1
 
@@ -795,13 +736,13 @@ class SEOBoosterBot:
                         event_name="generate_lead", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
                         screen_res=screen_res,
-                        custom_params={"ep.currency": "NPR", "epn.value": "5000", "ep.lead_type": "restaurant_erp_inquiry"},
-                        country=proxy.get("country", "XX")
+                        country=proxy.get("country", "XX"),
+                        custom_params={"ep.currency": "NPR", "epn.value": "5000", "ep.lead_type": "restaurant_erp_inquiry"}
                     ):
                         events_fired += 1
                         logger.info(f"[CONVERSION] Successfully fired lead conversion event on {landing_url}")
 
-                # 6. Multi-page navigation loop (INCREASED pages per session)
+                # 6. Multi-page navigation loop
                 num_extra_pages = random.randint(PAGES_PER_SESSION_MIN - 1, PAGES_PER_SESSION_MAX - 1)
                 current_url = landing_url
                 session_dwell = dwell
@@ -857,12 +798,11 @@ class SEOBoosterBot:
                         client_id=client_id, session_id=session_id, page_id=page_id,
                         event_name="page_view", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
-                        referrer=previous_url, screen_res=screen_res,
-                        country=proxy.get("country", "XX")
+                        referrer=previous_url, screen_res=screen_res
                     ):
                         events_fired += 1
 
-                    # Dwell on internal page (INCREASED)
+                    # Dwell on internal page
                     page_dwell = random.uniform(INTERNAL_DWELL_MIN, INTERNAL_DWELL_MAX)
                     self.stop_event.wait(page_dwell)
                     session_dwell += page_dwell
@@ -882,20 +822,24 @@ class SEOBoosterBot:
                     ):
                         events_fired += 1
 
-                    # Multi-point scroll on internal page
-                    for sp in scroll_points:
-                        if random.random() < 0.4:
-                            hit_seq += 1
-                            if self.fire_ga4_event(
-                                sess=sess, url=next_url, title=next_title,
-                                client_id=client_id, session_id=session_id, page_id=page_id,
-                                event_name="scroll", hit_seq=hit_seq,
-                                session_count=session_count, is_engaged=True,
-                                screen_res=screen_res, percent_scrolled=sp,
-                                country=proxy.get("country", "XX")
-                            ):
-                                events_fired += 1
-                            self.stop_event.wait(random.uniform(1, 3))
+                    # Multi-point scroll on internal page (25/50/75/90)
+                    if random.random() < 0.3:
+                        scroll_points = [25, 50, 75, 90]
+                        for sp in scroll_points:
+                            if random.random() < 0.4:
+                                hit_seq += 1
+                                if self.fire_ga4_event(
+                                    sess=sess, url=next_url, title=next_title,
+                                    client_id=client_id, session_id=session_id, page_id=page_id,
+                                    event_name="scroll", hit_seq=hit_seq,
+                                    session_count=session_count, is_engaged=True,
+                                    screen_res=screen_res, percent_scrolled=sp,
+                                    country=proxy.get("country", "XX")
+                                ):
+                                    events_fired += 1
+                                self.stop_event.wait(random.uniform(1, 3))
+                                if self.stop_event.is_set():
+                                    break
 
                     # Key Event / Conversion Simulation on internal lead pages
                     if any(p in next_url for p in LEAD_PAGES) and random.random() < KEY_EVENT_PROBABILITY:
@@ -906,8 +850,8 @@ class SEOBoosterBot:
                             event_name="form_start", hit_seq=hit_seq,
                             session_count=session_count, is_engaged=True,
                             screen_res=screen_res,
-                            custom_params={"ep.form_id": "contact_lead_form", "ep.form_name": "Inquiry Form"},
-                            country=proxy.get("country", "XX")
+                            country=proxy.get("country", "XX"),
+                            custom_params={"ep.form_id": "contact_lead_form", "ep.form_name": "Inquiry Form"}
                         ):
                             events_fired += 1
 
@@ -919,13 +863,13 @@ class SEOBoosterBot:
                             event_name="generate_lead", hit_seq=hit_seq,
                             session_count=session_count, is_engaged=True,
                             screen_res=screen_res,
-                            custom_params={"ep.currency": "NPR", "epn.value": "5000", "ep.lead_type": "restaurant_erp_inquiry"},
-                            country=proxy.get("country", "XX")
+                            country=proxy.get("country", "XX"),
+                            custom_params={"ep.currency": "NPR", "epn.value": "5000", "ep.lead_type": "restaurant_erp_inquiry"}
                         ):
                             events_fired += 1
                             logger.info(f"[CONVERSION] Successfully fired lead conversion event on {next_url}")
 
-                # 7. Log completed session
+                # Logging now includes country for geo analysis
                 self.log_visit(
                     source_type.upper(),
                     ",".join(urlparse(p).path or "/" for p in pages_visited),
@@ -945,7 +889,6 @@ class SEOBoosterBot:
 
             except Exception as e:
                 logger.debug(f"Worker iteration failed: {e}")
-                self.record_proxy_result(proxy.get("proxy", ""), False)
                 self.stop_event.wait(5)
 
     # ==================== LOGGING & STATS ====================
@@ -977,10 +920,6 @@ class SEOBoosterBot:
             top_countries = countries[:5]
             country_str = ", ".join(top_countries) if top_countries else "N/A"
 
-            hit1_rate = 0
-            if self.hit1_attempts > 0:
-                hit1_rate = round(self.hit1_successes / self.hit1_attempts * 100, 1)
-
             return {
                 "visits": self.successful_visits,
                 "unique_countries": len(countries),
@@ -991,11 +930,7 @@ class SEOBoosterBot:
                 "is_running": self.is_running,
                 "active_proxies": len(self.working_proxies),
                 "threads": THREADS,
-                "target_url": TARGET_URL,
-                "hit1_success_rate": hit1_rate,
-                "hit1_attempts": self.hit1_attempts,
-                "hit1_successes": self.hit1_successes,
-                "returning_pool_size": len(self.returning_profiles),
+                "target_url": TARGET_URL
             }
 
     # ==================== START / STOP ====================

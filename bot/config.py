@@ -65,10 +65,8 @@ PROXY_ROTATE_INTERVAL = int(os.getenv("PROXY_ROTATE_INTERVAL", 1800))  # seconds
 PORT = int(os.getenv("PORT", 5000))
 
 # Behavior Timing (seconds)
-DWELL_MIN = int(os.getenv("DWELL_MIN", 90))
-DWELL_MAX = int(os.getenv("DWELL_MAX", 300))
-INTERNAL_DWELL_MIN = int(os.getenv("INTERNAL_DWELL_MIN", 45))
-INTERNAL_DWELL_MAX = int(os.getenv("INTERNAL_DWELL_MAX", 120))
+DWELL_MIN = int(os.getenv("DWELL_MIN", 60))
+DWELL_MAX = int(os.getenv("DWELL_MAX", 180))
 GOOGLE_WAIT_MIN = int(os.getenv("GOOGLE_WAIT_MIN", 10))
 GOOGLE_WAIT_MAX = int(os.getenv("GOOGLE_WAIT_MAX", 30))
 
@@ -87,25 +85,6 @@ TRAFFIC_SOURCES = {
     "other_organic": 0.15,
 }
 
-# AI Assistant Referrers (Expanded - 12 sources with weights)
-AI_REFERRERS = [
-    # Tier 1: Major AI assistants (higher weight)
-    {"referer": "https://chatgpt.com/", "utm_source": "chatgpt.com", "utm_medium": "ai-assistant", "weight": 25},
-    {"referer": "https://claude.ai/", "utm_source": "claude.ai", "utm_medium": "ai-assistant", "weight": 20},
-    {"referer": "https://gemini.google.com/", "utm_source": "gemini.google.com", "utm_medium": "ai-assistant", "weight": 15},
-    {"referer": "https://copilot.microsoft.com/", "utm_source": "copilot.microsoft.com", "utm_medium": "ai-assistant", "weight": 10},
-    {"referer": "https://www.perplexity.ai/", "utm_source": "perplexity.ai", "utm_medium": "ai-assistant", "weight": 10},
-    # Tier 2: Emerging AI assistants
-    {"referer": "https://meta.ai/", "utm_source": "meta.ai", "utm_medium": "ai-assistant", "weight": 5},
-    {"referer": "https://you.com/", "utm_source": "you.com", "utm_medium": "ai-assistant", "weight": 4},
-    {"referer": "https://www.phind.com/", "utm_source": "phind.com", "utm_medium": "ai-assistant", "weight": 3},
-    {"referer": "https://poe.com/", "utm_source": "poe.com", "utm_medium": "ai-assistant", "weight": 3},
-    {"referer": "https://character.ai/", "utm_source": "character.ai", "utm_medium": "ai-assistant", "weight": 2},
-    {"referer": "https://groq.com/", "utm_source": "groq.com", "utm_medium": "ai-assistant", "weight": 2},
-    {"referer": "https://huggingface.co/chat/", "utm_source": "huggingface.co", "utm_medium": "ai-assistant", "weight": 1},
-]
-
-# Social Referrers (Expanded - 18 sources with weights)
 SOCIAL_REFERRERS = [
     # Facebook/Meta
     {"referer": "https://www.facebook.com/", "utm_source": "facebook", "utm_medium": "social", "weight": 20},
@@ -137,7 +116,23 @@ SOCIAL_REFERRERS = [
     {"referer": "https://github.com/", "utm_source": "github", "utm_medium": "referral", "weight": 1},
 ]
 
-# Other Search Engines (Expanded - 10 sources with weights)
+AI_REFERRERS = [
+    # Tier 1: Major AI assistants (higher weight)
+    {"referer": "https://chatgpt.com/", "utm_source": "chatgpt.com", "utm_medium": "ai-assistant", "weight": 25},
+    {"referer": "https://claude.ai/", "utm_source": "claude.ai", "utm_medium": "ai-assistant", "weight": 20},
+    {"referer": "https://gemini.google.com/", "utm_source": "gemini.google.com", "utm_medium": "ai-assistant", "weight": 15},
+    {"referer": "https://copilot.microsoft.com/", "utm_source": "copilot.microsoft.com", "utm_medium": "ai-assistant", "weight": 10},
+    {"referer": "https://www.perplexity.ai/", "utm_source": "perplexity.ai", "utm_medium": "ai-assistant", "weight": 10},
+    # Tier 2: Emerging AI assistants
+    {"referer": "https://meta.ai/", "utm_source": "meta.ai", "utm_medium": "ai-assistant", "weight": 5},
+    {"referer": "https://you.com/", "utm_source": "you.com", "utm_medium": "ai-assistant", "weight": 4},
+    {"referer": "https://www.phind.com/", "utm_source": "phind.com", "utm_medium": "ai-assistant", "weight": 3},
+    {"referer": "https://poe.com/", "utm_source": "poe.com", "utm_medium": "ai-assistant", "weight": 3},
+    {"referer": "https://character.ai/", "utm_source": "character.ai", "utm_medium": "ai-assistant", "weight": 2},
+    {"referer": "https://groq.com/", "utm_source": "groq.com", "utm_medium": "ai-assistant", "weight": 2},
+    {"referer": "https://huggingface.co/chat/", "utm_source": "huggingface.co", "utm_medium": "ai-assistant", "weight": 1},
+]
+
 OTHER_SEARCH_ENGINES = [
     {"referer": "https://www.bing.com/", "engine": "bing", "weight": 30},
     {"referer": "https://duckduckgo.com/", "engine": "duckduckgo", "weight": 25},
@@ -176,11 +171,12 @@ LEAD_PAGES = [
 ]
 
 # --------------- Multi-Page Navigation ---------------
-INTERNAL_PATHS = ["/news/", "/about/", "/contact/", "/pricing/", "/demo/", "/features/"]
+INTERNAL_PATHS = ["/news/", "/about/", "/contact/", "/pricing/", "/features/", "/integrations/"]
 PAGES_PER_SESSION_MIN = int(os.getenv("PAGES_PER_SESSION_MIN", 3))
 PAGES_PER_SESSION_MAX = int(os.getenv("PAGES_PER_SESSION_MAX", 6))
 
-# Target Countries for Geo-Targeting (RestroMandu markets)
+# --------------- Geographic & Language Distribution ---------------
+# Target countries for RestroMandu (Nepal restaurant software)
 TARGET_COUNTRIES = {
     "NP": 0.35,   # Nepal - primary
     "IN": 0.25,   # India - major market
@@ -198,7 +194,6 @@ TARGET_COUNTRIES = {
     "AU": 0.01,   # Australia
 }
 
-# Language by Country for GA4 'ul' parameter
 COUNTRY_LANGUAGES = {
     "NP": ["ne-NP", "en-US"],
     "IN": ["en-IN", "hi-IN", "en-US"],
@@ -216,35 +211,52 @@ COUNTRY_LANGUAGES = {
     "AU": ["en-AU"],
 }
 
-# --------------- Device / Browser Diversity ---------------
+# ==================== CONFIG VALIDATION ====================
+# Validate critical config at import time (after variables are defined)
+assert sum(TRAFFIC_SOURCES.values()) == 1.0, "TRAFFIC_SOURCES must sum to 1.0"
+assert DWELL_MIN >= 60, "DWELL_MIN too low for engagement (min 60s)"
+assert KEY_EVENT_PROBABILITY > 0, "KEY_EVENT_PROBABILITY must be > 0"
+assert RETURNING_USER_RATIO > 0, "RETURNING_USER_RATIO must be > 0"
+assert MAX_RETURNING_POOL_SIZE > 0, "MAX_RETURNING_POOL_SIZE must be > 0"
+assert PAGES_PER_SESSION_MIN >= 1, "PAGES_PER_SESSION_MIN must be >= 1"
+assert PAGES_PER_SESSION_MAX >= PAGES_PER_SESSION_MIN, "PAGES_PER_SESSION_MAX must be >= PAGES_PER_SESSION_MIN"
+logger.info("Config validation passed")
+
+
 DEVICE_PROFILES = [
+    # Chrome Desktop
     {"weight": 50, "platform": "desktop", "os": "Windows", "browser": "Chrome",
      "ua_tpl": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ver} Safari/537.36",
      "resolutions": ["1920x1080", "1366x768", "1536x864", "1440x900", "1280x720"]},
     {"weight": 10, "platform": "desktop", "os": "Macintosh", "browser": "Chrome",
      "ua_tpl": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ver} Safari/537.36",
      "resolutions": ["1440x900", "1920x1080", "2560x1440"]},
+    {"weight": 5, "platform": "desktop", "os": "Linux", "browser": "Chrome",
+     "ua_tpl": "Mozilla/5.0 (X11; Linux x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ver} Safari/537.36",
+     "resolutions": ["1920x1080", "1366x768"]},
+    # Safari Desktop
     {"weight": 8, "platform": "desktop", "os": "Macintosh", "browser": "Safari",
      "ua_tpl": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.{minor} Safari/605.1.15",
      "resolutions": ["1440x900", "1920x1080"]},
-    {"weight": 5, "platform": "desktop", "os": "Linux", "browser": "Chrome",
-     "ua_tpl": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ver} Safari/537.36",
-     "resolutions": ["1920x1080", "1366x768"]},
+    # Edge Desktop
     {"weight": 8, "platform": "desktop", "os": "Windows", "browser": "Edge",
      "ua_tpl": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ver} Safari/537.36 Edg/{ver}",
      "resolutions": ["1920x1080", "1366x768", "1536x864"]},
+    # Firefox Desktop
     {"weight": 5, "platform": "desktop", "os": "Windows", "browser": "Firefox",
      "ua_tpl": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{ver}.0) Gecko/20100101 Firefox/{ver}.0",
      "resolutions": ["1920x1080", "1366x768"]},
     {"weight": 3, "platform": "desktop", "os": "Macintosh", "browser": "Firefox",
      "ua_tpl": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:{ver}.0) Gecko/20100101 Firefox/{ver}.0",
      "resolutions": ["1440x900", "1920x1080"]},
+    # Chrome Mobile
     {"weight": 15, "platform": "mobile", "os": "Android", "browser": "Chrome",
      "ua_tpl": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ver} Mobile Safari/537.36",
      "resolutions": ["412x915", "393x873", "360x800"]},
-    {"weight": 5, "platform": "mobile", "os": "Android", "browser": "SamsungBrowser",
+    {"weight": 3, "platform": "mobile", "os": "Android", "browser": "SamsungBrowser",
      "ua_tpl": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/{ver}.0 Chrome/{ver} Mobile Safari/537.36",
      "resolutions": ["412x915", "393x873"]},
+    # Safari Mobile
     {"weight": 12, "platform": "mobile", "os": "iOS", "browser": "Safari",
      "ua_tpl": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.{minor} Mobile/15E148 Safari/604.1",
      "resolutions": ["393x852", "390x844", "414x896"]},
