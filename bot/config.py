@@ -67,6 +67,8 @@ PORT = int(os.getenv("PORT", 5000))
 # Behavior Timing (seconds)
 DWELL_MIN = int(os.getenv("DWELL_MIN", 60))
 DWELL_MAX = int(os.getenv("DWELL_MAX", 180))
+INTERNAL_DWELL_MIN = int(os.getenv("INTERNAL_DWELL_MIN", 45))
+INTERNAL_DWELL_MAX = int(os.getenv("INTERNAL_DWELL_MAX", 120))
 GOOGLE_WAIT_MIN = int(os.getenv("GOOGLE_WAIT_MIN", 10))
 GOOGLE_WAIT_MAX = int(os.getenv("GOOGLE_WAIT_MAX", 30))
 
@@ -126,7 +128,7 @@ AI_REFERRERS = [
     # Tier 2: Emerging AI assistants
     {"referer": "https://meta.ai/", "utm_source": "meta.ai", "utm_medium": "ai-assistant", "weight": 5},
     {"referer": "https://you.com/", "utm_source": "you.com", "utm_medium": "ai-assistant", "weight": 4},
-    {"referer": "https://www.phind.com/", "utm_source": "phind.com", "utm_medium": "ai-assistant", "weight": 3},
+    {"referer": "https://phind.com/", "utm_source": "phind.com", "utm_medium": "ai-assistant", "weight": 3},
     {"referer": "https://poe.com/", "utm_source": "poe.com", "utm_medium": "ai-assistant", "weight": 3},
     {"referer": "https://character.ai/", "utm_source": "character.ai", "utm_medium": "ai-assistant", "weight": 2},
     {"referer": "https://groq.com/", "utm_source": "groq.com", "utm_medium": "ai-assistant", "weight": 2},
@@ -175,54 +177,7 @@ INTERNAL_PATHS = ["/news/", "/about/", "/contact/", "/pricing/", "/features/", "
 PAGES_PER_SESSION_MIN = int(os.getenv("PAGES_PER_SESSION_MIN", 3))
 PAGES_PER_SESSION_MAX = int(os.getenv("PAGES_PER_SESSION_MAX", 6))
 
-# --------------- Geographic & Language Distribution ---------------
-# Target countries for RestroMandu (Nepal restaurant software)
-TARGET_COUNTRIES = {
-    "NP": 0.35,   # Nepal - primary
-    "IN": 0.25,   # India - major market
-    "BD": 0.10,   # Bangladesh
-    "AE": 0.05,   # UAE
-    "QA": 0.03,   # Qatar
-    "SA": 0.03,   # Saudi Arabia
-    "MY": 0.03,   # Malaysia
-    "SG": 0.03,   # Singapore
-    "TH": 0.03,   # Thailand
-    "PH": 0.03,   # Philippines
-    "LK": 0.02,   # Sri Lanka
-    "US": 0.02,   # US (some legitimate traffic)
-    "GB": 0.01,   # UK
-    "AU": 0.01,   # Australia
-}
-
-COUNTRY_LANGUAGES = {
-    "NP": ["ne-NP", "en-US"],
-    "IN": ["en-IN", "hi-IN", "en-US"],
-    "BD": ["bn-BD", "en-US"],
-    "AE": ["ar-AE", "en-US"],
-    "QA": ["ar-QA", "en-US"],
-    "SA": ["ar-SA", "en-US"],
-    "MY": ["ms-MY", "en-US"],
-    "SG": ["en-SG", "zh-CN", "ms-MY"],
-    "TH": ["th-TH", "en-US"],
-    "PH": ["en-PH", "tl-PH"],
-    "LK": ["si-LK", "ta-LK", "en-US"],
-    "US": ["en-US"],
-    "GB": ["en-GB"],
-    "AU": ["en-AU"],
-}
-
-# ==================== CONFIG VALIDATION ====================
-# Validate critical config at import time (after variables are defined)
-assert sum(TRAFFIC_SOURCES.values()) == 1.0, "TRAFFIC_SOURCES must sum to 1.0"
-assert DWELL_MIN >= 60, "DWELL_MIN too low for engagement (min 60s)"
-assert KEY_EVENT_PROBABILITY > 0, "KEY_EVENT_PROBABILITY must be > 0"
-assert RETURNING_USER_RATIO > 0, "RETURNING_USER_RATIO must be > 0"
-assert MAX_RETURNING_POOL_SIZE > 0, "MAX_RETURNING_POOL_SIZE must be > 0"
-assert PAGES_PER_SESSION_MIN >= 1, "PAGES_PER_SESSION_MIN must be >= 1"
-assert PAGES_PER_SESSION_MAX >= PAGES_PER_SESSION_MIN, "PAGES_PER_SESSION_MAX must be >= PAGES_PER_SESSION_MIN"
-print("Config validation passed")
-
-
+# --------------- Device / Browser Diversity ---------------
 DEVICE_PROFILES = [
     # Chrome Desktop
     {"weight": 50, "platform": "desktop", "os": "Windows", "browser": "Chrome",
@@ -261,3 +216,14 @@ DEVICE_PROFILES = [
      "ua_tpl": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.{minor} Mobile/15E148 Safari/604.1",
      "resolutions": ["393x852", "390x844", "414x896"]},
 ]
+
+# ==================== CONFIG VALIDATION ====================
+# Validate critical config at import time (after variables are defined)
+assert sum(TRAFFIC_SOURCES.values()) == 1.0, "TRAFFIC_SOURCES must sum to 1.0"
+assert DWELL_MIN >= 60, "DWELL_MIN too low for engagement (min 60s)"
+assert KEY_EVENT_PROBABILITY > 0, "KEY_EVENT_PROBABILITY must be > 0"
+assert RETURNING_USER_RATIO > 0, "RETURNING_USER_RATIO must be > 0"
+assert MAX_RETURNING_POOL_SIZE > 0, "MAX_RETURNING_POOL_SIZE must be > 0"
+assert PAGES_PER_SESSION_MIN >= 1, "PAGES_PER_SESSION_MIN must be >= 1"
+assert PAGES_PER_SESSION_MAX >= PAGES_PER_SESSION_MIN, "PAGES_PER_SESSION_MAX must be >= PAGES_PER_SESSION_MIN"
+print("Config validation passed")

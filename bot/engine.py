@@ -21,7 +21,7 @@ from bot.config import (
     OTHER_SEARCH_ENGINES, INTERNAL_PATHS,
     PAGES_PER_SESSION_MIN, PAGES_PER_SESSION_MAX, DEVICE_PROFILES,
     RETURNING_USER_RATIO, KEY_EVENT_PROBABILITY, MAX_RETURNING_POOL_SIZE,
-    TARGET_COUNTRIES, COUNTRY_LANGUAGES, LEAD_PAGES, RETURNING_COHORT_WEIGHTS,
+    LEAD_PAGES, RETURNING_COHORT_WEIGHTS,
 )
 from bot.logger import logger
 
@@ -56,10 +56,6 @@ class SEOBoosterBot:
         self.returning_profiles_path = os.path.join(OUTPUT_FOLDER, "returning_profiles.json")
         self.load_returning_profiles()
 
-        # Proxy health tracking
-        self.proxy_stats = {}  # proxy_url -> {"success": 0, "fail": 0, "last_used": 0}
-        self.proxy_stats_lock = threading.Lock()
-
         # Init CSV LOG
         self.log_path = os.path.join(OUTPUT_FOLDER, "traffic_log.csv")
         if not os.path.exists(self.log_path):
@@ -88,34 +84,11 @@ class SEOBoosterBot:
         except Exception as e:
             logger.error(f"Failed to save returning profiles: {e}")
 
-    def update_proxy_stats(self, proxy_url, success):
-        """Track proxy success/failure for health monitoring."""
-        with self.proxy_stats_lock:
-            if proxy_url not in self.proxy_stats:
-                self.proxy_stats[proxy_url] = {"success": 0, "fail": 0, "last_used": 0}
-            if success:
-                self.proxy_stats[proxy_url]["success"] += 1
-            else:
-                self.proxy_stats[proxy_url]["fail"] += 1
-            self.proxy_stats[proxy_url]["last_used"] = time.time()
-
-    def is_proxy_healthy(self, proxy_url):
-        """Check if proxy has acceptable success rate."""
-        with self.proxy_stats_lock:
-            stats = self.proxy_stats.get(proxy_url)
-            if not stats:
-                return True  # Unknown proxy, give it a chance
-            total = stats["success"] + stats["fail"]
-            if total < 10:
-                return True  # Not enough data
-            return stats["success"] / total >= 0.3  # 30% minimum success rate
-
     # ==================== PROXY POOL (UNTOUCHED) ====================
 
     def get_proxies(self):
         """Scrape free proxies from various sources."""
         sources = [
-            # Original 7 sources
             "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTP_RAW.txt",
             "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
             "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
@@ -123,22 +96,6 @@ class SEOBoosterBot:
             "https://www.proxy-list.download/api/v1/get?type=http",
             "https://raw.githubusercontent.com/mmpx12/proxy-list/master/proxies/http.txt",
             "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
-            # NEW: Additional 15+ sources
-            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-            "https://raw.githubusercontent.com/sunny9577/proxy-scraper/main/proxies.txt",
-            "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
-            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-            "https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/http.txt",
-            "https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list/data.txt",
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
-            "https://www.proxy-list.download/api/v1/get?type=https",
-            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
-            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
-            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
-            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-            "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps",
-            "https://api.openproxylist.xyz/http.txt",
-            "https://raw.githubusercontent.com/volkandev/proxy-list/main/http.txt",
         ]
         proxies = set()
         s = requests.Session(impersonate="chrome120")
@@ -160,72 +117,14 @@ class SEOBoosterBot:
         """Estimate country from IP."""
         if ip == "PREMIUM": return "US"
         try:
-            r = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode,as,org", timeout=5)
+            r = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode", timeout=5)
             if r.status_code == 200:
-                data = r.json()
-                return data.get("countryCode", "XX"), data.get("as", ""), data.get("org", "")
+                return r.json().get("countryCode", "XX")
         except: pass
-        return "XX", "", ""
-
-    def is_residential_asn(self, asn_str, org_str):
-        """Detect if ASN/org indicates residential ISP."""
-        residential_keywords = [
-            "telecom", "communications", "cable", "broadband", "fiber", "dsl",
-            "isp", "internet service", "wireless", "mobile", "cellular",
-            "comcast", "verizon", "at&t", "charter", "cox", "spectrum",
-            "vodafone", "t-mobile", "orange", "telefonica", "bt group",
-            "sky broadband", "virgin media", "talk talk", "plusnet",
-            "jio", "airtel", "bsnl", "mtnl", "act fiber", "hathway",
-            "worldlink", "subisu", "vianet", "classic tech", "websterz"
-        ]
-        text = f"{asn_str} {org_str}".lower()
-        for kw in residential_keywords:
-            if kw in text:
-                return True
-        return False
-
-    def is_datacenter_asn(self, asn_str, org_str):
-        """Detect if ASN/org indicates datacenter/cloud/hosting."""
-        datacenter_keywords = [
-            "amazon", "aws", "google cloud", "microsoft azure", "digitalocean",
-            "linode", "vultr", "hetzner", "ovh", "scaleway", "contabo",
-            "rackspace", "softlayer", "ibm cloud", "oracle cloud",
-            "datacenter", "data center", "hosting", "colo", "colocation",
-            "server", "vps", "cloud", "cdn", "content delivery",
-            "akamai", "cloudflare", "fastly", "maxcdn", "keycdn",
-            "choopa", "quadranet", "psychz", "multacom", "nlayer",
-            "cogent", "level3", "ntt", "gtc", "pccw", "tata communications"
-        ]
-        text = f"{asn_str} {org_str}".lower()
-        for kw in datacenter_keywords:
-            if kw in text:
-                return True
-        return False
-
-    def calculate_proxy_score(self, latency, is_residential, is_datacenter, country):
-        """Score proxy based on latency, residential status, and geo-targeting."""
-        # Base score from latency
-        if latency < 200:
-            score = 100
-        elif latency < 500:
-            score = 85
-        else:
-            score = 70
-
-        # Residential bonus (major factor for GA4 acceptance)
-        if is_residential:
-            score += 20
-        elif is_datacenter:
-            score -= 30  # Penalize datacenter IPs
-
-        # Geo-targeting bonus
-        target_weight = TARGET_COUNTRIES.get(country, 0)
-        score += target_weight * 100  # Up to 35 points for Nepal
-
-        return max(0, min(100, score))
+        return "XX"
 
     def test_proxy(self, p_url):
-        """Test proxy speed, anonymity, and residential quality."""
+        """Test proxy speed and anonymity."""
         if self.stop_event.is_set():
             return None
         try:
@@ -236,11 +135,9 @@ class SEOBoosterBot:
             if r.status_code == 200:
                 latency = (time.time() - start) * 1000
                 ip = r.json()["origin"].split(",")[0]
-                country, asn, org = self.get_country_from_ip(ip)
-                is_residential = self.is_residential_asn(asn, org)
-                is_datacenter = self.is_datacenter_asn(asn, org)
-                score = self.calculate_proxy_score(latency, is_residential, is_datacenter, country)
-                return {"proxy": p_url, "ip": ip, "country": country, "score": score, "asn": asn, "org": org}
+                country = self.get_country_from_ip(ip)
+                score = 100 if latency < 200 else 85 if latency < 500 else 70
+                return {"proxy": p_url, "ip": ip, "country": country, "score": score}
         except: pass
         return None
 
@@ -250,7 +147,7 @@ class SEOBoosterBot:
 
         pool = []
         for p in PREMIUM_PROXIES:
-            pool.append({"proxy": p, "ip": "PREMIUM", "country": "US", "score": 100, "asn": "", "org": ""})
+            pool.append({"proxy": p, "ip": "PREMIUM", "country": "US", "score": 100})
 
         raw_list = self.get_proxies()
         if raw_list:
@@ -258,7 +155,7 @@ class SEOBoosterBot:
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(raw_list) + 1, 100)) as ex:
                 results = list(ex.map(self.test_proxy, raw_list))
 
-            good_free = [p for p in results if p and p.get("score", 0) >= 50]  # Lower threshold for free proxies
+            good_free = [p for p in results if p and p.get("score", 0) >= 70]
             good_free.sort(key=lambda x: x.get("score", 0), reverse=True)
             pool.extend(good_free[:500])
 
@@ -304,7 +201,7 @@ class SEOBoosterBot:
                        campaign_source=None, campaign_medium=None,
                        campaign_term=None, campaign_name=None,
                        percent_scrolled=None, link_url=None,
-                       custom_params=None, country="XX"):
+                       custom_params=None):
         """Fire a single authentic GA4 collect event with proper origin headers and params."""
         try:
             tid = self._resolve_ga4_tid(sess)
@@ -314,16 +211,13 @@ class SEOBoosterBot:
             parsed_url = urlparse(url)
             origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
-            # Language based on country
-            ul = random.choice(COUNTRY_LANGUAGES.get(country, ["en-US"]))
-
             params = {
                 "v": "2",
                 "tid": tid,
                 "gtm": "45je4b10v878893931za200",
                 "_p": page_id,
                 "cid": client_id,
-                "ul": ul,
+                "ul": "en-us",
                 "sr": screen_res,
                 "dl": url,
                 "dt": title,
@@ -650,6 +544,7 @@ class SEOBoosterBot:
                         if self.working_proxies:
                             proxy = random.choice(self.working_proxies)
                     sess, device = self.get_session(proxy)
+                    screen_res = device["_res"]
                     source_type, referer_url, landing_url, keyword, cs, cm = self._pick_traffic_source()
                     sess.headers["Referer"] = referer_url
                     title, status = self.get_page_title(sess, landing_url)
@@ -691,8 +586,7 @@ class SEOBoosterBot:
                     client_id=client_id, session_id=session_id, page_id=page_id,
                     event_name="user_engagement", hit_seq=hit_seq,
                     session_count=session_count, is_engaged=True,
-                    engagement_time=engagement_ms, screen_res=screen_res,
-                    country=proxy.get("country", "XX")
+                    engagement_time=engagement_ms, screen_res=screen_res
                 ):
                     events_fired += 1
 
@@ -706,8 +600,7 @@ class SEOBoosterBot:
                             client_id=client_id, session_id=session_id, page_id=page_id,
                             event_name="scroll", hit_seq=hit_seq,
                             session_count=session_count, is_engaged=True,
-                            screen_res=screen_res, percent_scrolled=sp,
-                            country=proxy.get("country", "XX")
+                            screen_res=screen_res, percent_scrolled=sp
                         ):
                             events_fired += 1
                         self.stop_event.wait(random.uniform(1, 3))
@@ -723,7 +616,6 @@ class SEOBoosterBot:
                         event_name="form_start", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
                         screen_res=screen_res,
-                        country=proxy.get("country", "XX"),
                         custom_params={"ep.form_id": "contact_lead_form", "ep.form_name": "Inquiry Form"}
                     ):
                         events_fired += 1
@@ -736,7 +628,6 @@ class SEOBoosterBot:
                         event_name="generate_lead", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
                         screen_res=screen_res,
-                        country=proxy.get("country", "XX"),
                         custom_params={"ep.currency": "NPR", "epn.value": "5000", "ep.lead_type": "restaurant_erp_inquiry"}
                     ):
                         events_fired += 1
@@ -769,8 +660,7 @@ class SEOBoosterBot:
                         client_id=client_id, session_id=session_id, page_id=page_id,
                         event_name="click", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
-                        screen_res=screen_res, link_url=next_url,
-                        country=proxy.get("country", "XX")
+                        screen_res=screen_res, link_url=next_url
                     ):
                         events_fired += 1
 
@@ -817,8 +707,7 @@ class SEOBoosterBot:
                         client_id=client_id, session_id=session_id, page_id=page_id,
                         event_name="user_engagement", hit_seq=hit_seq,
                         session_count=session_count, is_engaged=True,
-                        engagement_time=page_engagement_ms, screen_res=screen_res,
-                        country=proxy.get("country", "XX")
+                        engagement_time=page_engagement_ms, screen_res=screen_res
                     ):
                         events_fired += 1
 
@@ -833,8 +722,7 @@ class SEOBoosterBot:
                                     client_id=client_id, session_id=session_id, page_id=page_id,
                                     event_name="scroll", hit_seq=hit_seq,
                                     session_count=session_count, is_engaged=True,
-                                    screen_res=screen_res, percent_scrolled=sp,
-                                    country=proxy.get("country", "XX")
+                                    screen_res=screen_res, percent_scrolled=sp
                                 ):
                                     events_fired += 1
                                 self.stop_event.wait(random.uniform(1, 3))
@@ -850,7 +738,6 @@ class SEOBoosterBot:
                             event_name="form_start", hit_seq=hit_seq,
                             session_count=session_count, is_engaged=True,
                             screen_res=screen_res,
-                            country=proxy.get("country", "XX"),
                             custom_params={"ep.form_id": "contact_lead_form", "ep.form_name": "Inquiry Form"}
                         ):
                             events_fired += 1
@@ -863,7 +750,6 @@ class SEOBoosterBot:
                             event_name="generate_lead", hit_seq=hit_seq,
                             session_count=session_count, is_engaged=True,
                             screen_res=screen_res,
-                            country=proxy.get("country", "XX"),
                             custom_params={"ep.currency": "NPR", "epn.value": "5000", "ep.lead_type": "restaurant_erp_inquiry"}
                         ):
                             events_fired += 1
