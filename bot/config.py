@@ -220,7 +220,7 @@ assert RETURNING_USER_RATIO > 0, "RETURNING_USER_RATIO must be > 0"
 assert MAX_RETURNING_POOL_SIZE > 0, "MAX_RETURNING_POOL_SIZE must be > 0"
 assert PAGES_PER_SESSION_MIN >= 1, "PAGES_PER_SESSION_MIN must be >= 1"
 assert PAGES_PER_SESSION_MAX >= PAGES_PER_SESSION_MIN, "PAGES_PER_SESSION_MAX must be >= PAGES_PER_SESSION_MIN"
-logger.info("Config validation passed")
+print("Config validation passed")
 
 
 DEVICE_PROFILES = [
